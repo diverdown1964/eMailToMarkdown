@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"c:\\\\Repos\\\\eMailToMarkdown\\\\scripts\\\\setup-entra-app.ps1\")",
+      "Bash(func start:*)",
+      "Bash(powershell -Command \"Start-Sleep -Seconds 20; & ''c:\\\\Repos\\\\eMailToMarkdown\\\\test-webhook.ps1''\")",
+      "Bash(powershell -Command:*)",
+      "Bash(az functionapp list:*)",
+      "Bash(az functionapp start:*)",
+      "Bash(az functionapp function show:*)",
+      "Bash(az functionapp keys list:*)",
+      "Bash(az monitor app-insights query:*)",
+      "Bash(az webapp log:*)",
+      "Bash(az monitor app-insights component show:*)",
+      "Bash(func azure functionapp list-functions:*)",
+      "Bash(az account show:*)",
+      "Bash(ls:*)",
+      "Bash(dotnet publish:*)",
+      "Bash(func azure functionapp publish emailtomarkdown-func)",
+      "Bash(func azure functionapp publish:*)",
+      "Bash(az functionapp function list:*)",
+      "Bash(az functionapp restart:*)",
+      "Bash(az rest:*)",
+      "Bash(az functionapp config appsettings list:*)",
+      "Bash(az functionapp stop:*)",
+      "Bash(az functionapp deployment source config-zip:*)",
+      "Bash(az functionapp show:*)",
+      "Bash(cat:*)",
+      "Bash(dotnet clean:*)"
+    ]
+  }
+}

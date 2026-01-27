@@ -137,5 +137,5 @@ Write-Host "`nWebhook URL: $functionAppUrl/api/graphWebhook" -ForegroundColor Ye
 Write-Host "`nNext Steps:" -ForegroundColor Cyan
 Write-Host "1. Add user preferences to Table Storage" -ForegroundColor White
 Write-Host "2. Create Microsoft Graph subscription with webhook URL" -ForegroundColor White
-Write-Host "3. Test by forwarding an email to storage1@bifocal.show" -ForegroundColor White
+Write-Host "3. Test by sending an email to your configured SendGrid inbound address" -ForegroundColor White
 Write-Host "`nDeployment complete! 🎉" -ForegroundColor Green

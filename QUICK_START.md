@@ -15,8 +15,8 @@
 ## Send Your First Email
 
 1. From your registered email account, compose a new email
-2. Send it to: **storage1@bifocal.show**
-3. Wait up to 60 seconds for processing
+2. Send it to your configured email address (as set up in SendGrid Inbound Parse)
+3. Email is processed immediately via webhook
 4. Check your OneDrive at `/EmailToMarkdown/YYYY/MM/DD/`
 
 ## Advanced Configuration
@@ -39,24 +39,6 @@ To organize files in a custom folder:
 .\setup-user.ps1 `
     -UserEmail "your-email@example.com" `
     -RootFolder "/MyEmailArchive"
-```
-
-### Adjust Polling Speed
-
-For faster processing (checks every 30 seconds):
-
-```powershell
-.\setup-user.ps1 `
-    -UserEmail "your-email@example.com" `
-    -PollingIntervalSeconds 30
-```
-
-For slower processing to save costs (checks every 5 minutes):
-
-```powershell
-.\setup-user.ps1 `
-    -UserEmail "your-email@example.com" `
-    -PollingIntervalSeconds 300
 ```
 
 ## File Naming and Organization
@@ -97,7 +79,10 @@ Run the setup script to register:
 - Verify the OneDrive account has proper permissions
 
 ### Processing taking too long
-Update the polling interval to check more frequently:
+Emails are processed immediately via webhook. If delays occur:
+- Check SendGrid Inbound Parse configuration
+- Review Azure Function logs
+- Verify webhook endpoint is accessible
 ```powershell
 .\setup-user.ps1 -UserEmail "your-email@example.com" -PollingIntervalSeconds 30
 ```

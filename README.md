@@ -71,26 +71,8 @@ Run the setup script to register a user and configure their preferences:
 - **RootFolder** (optional): Root folder in OneDrive (default: `/EmailToMarkdown`)
 - **DeliveryMethod** (optional): `email` (default), `onedrive`, or `both`
 - **StorageProvider** (optional): Storage provider (default: `onedrive`)
-- **PollingIntervalSeconds** (optional): Email check frequency (default: 60 seconds)
 
 ## Configuration Options
-
-### Polling Interval
-
-The service checks for new emails at a configurable interval:
-
-```powershell
-# Fast processing (every 30 seconds)
-.\setup-user.ps1 -UserEmail "user@example.com" -PollingIntervalSeconds 30
-
-# Standard processing (every 60 seconds) - recommended
-.\setup-user.ps1 -UserEmail "user@example.com" -PollingIntervalSeconds 60
-
-# Economy mode (every 5 minutes)
-.\setup-user.ps1 -UserEmail "user@example.com" -PollingIntervalSeconds 300
-```
-
-**Note**: Shorter intervals = faster processing but higher Azure costs.
 
 ### Delivery Method
 
@@ -111,20 +93,19 @@ Choose how you want to receive your converted markdown files:
 
 The Azure App Registration requires these Microsoft Graph API permissions:
 
-- `Mail.Read` - Read emails from storage1@bifocal.show
-- `Mail.ReadWrite` - Mark emails as read after processing
 - `Mail.Send` - Send confirmation emails
 - `Files.ReadWrite.All` - Write to any user's OneDrive
 
 ## Usage
 
 1. **Register your email** using the setup script
-2. **Send an email** to `storage1@bifocal.show` from your registered email address
-3. **Wait for processing** (up to the configured polling interval)
-4. **Check your destination**:
+2. **Configure SendGrid** Inbound Parse to forward emails to your function
+3. **Send an email** to your configured email address
+4. **Immediate processing** via SendGrid webhook
+5. **Check your destination**:
    - OneDrive location: `/EmailToMarkdown/YYYY/MM/DD/`
    - Filename format: `yyyy-MM-dd-SenderName-Subject.md`
-5. **Receive confirmation** email with markdown file attached (if delivery method includes email)
+6. **Receive confirmation** email with markdown file attached (if delivery method includes email)
 
 ## Obsidian Integration
 
@@ -187,11 +168,10 @@ Files are organized in OneDrive by date:
 
 ### Core Components
 
-- **EmailPoller**: Timer function that checks for unread emails
-- **EmailOrchestrationService**: Coordinates the workflow
-- **GraphEmailService**: Interacts with Microsoft Graph for email operations
+- **SendGridInbound**: HTTP function that receives webhook from SendGrid
 - **MarkdownConversionService**: Converts HTML email to markdown
 - **OneDriveStorageService**: Saves files to OneDrive
+- **AzureCommunicationEmailService**: Sends confirmation emails
 - **ConfigurationService**: Manages user preferences
 
 ### Data Storage
@@ -251,11 +231,10 @@ Configure these in Azure Function App settings:
 - `TENANT_ID`: Azure AD tenant ID
 - `CLIENT_ID`: App registration client ID
 - `CLIENT_SECRET`: App registration client secret
-- `EMAIL_ADDRESS`: Service email (storage1@bifocal.show)
 - `STORAGE_ACCOUNT_NAME`: Azure storage account name
 - `STORAGE_ACCOUNT_KEY`: Azure storage account key
-- `POLLING_INTERVAL_SECONDS`: Polling interval (default: 60)
-- `POLLING_CRON`: Auto-generated cron expression for timer
+- `ACS_CONNECTION_STRING`: Azure Communication Services connection string
+- `SENDGRID_API_KEY`: SendGrid API key (if using SendGrid for sending)
 
 ## Troubleshooting
 
@@ -276,17 +255,18 @@ Register the user first:
 
 ### Emails Not Being Processed
 
-1. Verify `POLLING_CRON` in app settings
-2. Check EmailPoller function is running (view logs)
-3. Confirm email sent from registered address
-4. Check ProcessedEmails table for duplicate prevention
+1. Verify SendGrid Inbound Parse is configured correctly
+2. Check function endpoint is accessible: `/api/inbound`
+3. Review Azure Function logs for webhook errors
+4. Confirm email sent from registered address
+5. Check ProcessedEmails table for duplicate prevention
 
 ## Project Structure
 
 ```
 eMailToMarkdown/
 ├── Functions/              # Azure Functions
-│   └── EmailPoller.cs      # Timer-triggered function
+│   └── SendGridInbound.cs  # HTTP-triggered webhook function
 ├── Models/                 # Data models
 │   ├── AppConfiguration.cs
 │   └── UserPreferences.cs

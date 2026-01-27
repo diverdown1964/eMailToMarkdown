@@ -1,5 +1,5 @@
 # Setup script for configuring a user in the UserPreferences table
-# This allows the user to send emails to storage1@bifocal.show and have them saved to their OneDrive
+# This allows users to send emails via SendGrid and have them saved to their OneDrive
 #
 # Examples:
 #   Basic setup (saves to /EmailToMarkdown in user's OneDrive):
@@ -33,9 +33,6 @@ param(
     [Parameter(Mandatory=$false)]
     [ValidateSet("email", "onedrive", "both")]
     [string]$DeliveryMethod = "email",
-
-    [Parameter(Mandatory=$false)]
-    [int]$PollingIntervalSeconds = 60,
     
     [Parameter(Mandatory=$false)]
     [string]$ResourceGroup = "emailtomarkdown",
@@ -83,49 +80,16 @@ az storage entity insert `
 
 Write-Host "✓ User preferences saved" -ForegroundColor Green
 
-# 2. Update Function App settings with polling interval
-Write-Host "`nUpdating Function App settings..." -ForegroundColor Yellow
-
-# Calculate cron expression from seconds
-# For minutes: "0 */N * * * *" where N is minutes
-# For seconds: Need to use specific seconds pattern
-$cronExpression = if ($PollingIntervalSeconds -lt 60) {
-    "0/$PollingIntervalSeconds * * * * *"
-} elseif ($PollingIntervalSeconds -eq 60) {
-    "0 * * * * *"
-} else {
-    $minutes = [Math]::Floor($PollingIntervalSeconds / 60)
-    "0 */$minutes * * * *"
-}
-
-$settings = @{
-    "POLLING_INTERVAL_SECONDS" = $PollingIntervalSeconds.ToString()
-    "POLLING_CRON" = $cronExpression
-}
-
-foreach ($key in $settings.Keys) {
-    az functionapp config appsettings set `
-        --name $FunctionAppName `
-        --resource-group $ResourceGroup `
-        --settings "$key=$($settings[$key])" `
-        --output none
-}
-
-Write-Host "✓ Function App settings updated" -ForegroundColor Green
-Write-Host "  - POLLING_INTERVAL_SECONDS: $PollingIntervalSeconds" -ForegroundColor Gray
-Write-Host "  - POLLING_CRON: $cronExpression" -ForegroundColor Gray
-
-# 3. Display summary
+# 2. Display summary
 Write-Host "`n=== Setup Complete ===" -ForegroundColor Green
 Write-Host "User Email: $UserEmail" -ForegroundColor Cyan
 Write-Host "OneDrive Destination: $OneDriveUserEmail" -ForegroundColor Cyan
 Write-Host "Root Folder: $RootFolder" -ForegroundColor Cyan
 Write-Host "Storage Provider: $StorageProvider" -ForegroundColor Cyan
 Write-Host "Delivery Method: $DeliveryMethod" -ForegroundColor Cyan
-Write-Host "Polling Interval: $PollingIntervalSeconds seconds" -ForegroundColor Cyan
 Write-Host "`nInstructions:" -ForegroundColor Yellow
-Write-Host "1. Send an email to storage1@bifocal.show from $UserEmail"
-Write-Host "2. Wait up to $PollingIntervalSeconds seconds for processing"
+Write-Host "1. Send an email to your configured SendGrid inbound address from $UserEmail"
+Write-Host "2. Email will be processed immediately via webhook"
 
 if ($DeliveryMethod -eq "email") {
     Write-Host "3. Check your inbox for a reply with the markdown file attached"

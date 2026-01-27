@@ -11,9 +11,9 @@
 ### Core Components
 
 #### 1. Azure Functions
-- **EmailPoller**: Timer-triggered function that polls for unread emails
-  - Configurable polling interval via cron expression
-  - Processes emails from registered users only
+- **SendGridInbound**: HTTP-triggered function that receives webhooks from SendGrid
+  - Processes incoming emails in real-time
+  - Validates sender against registered users
 
 #### 2. Service Layer
 
@@ -90,13 +90,7 @@
 - ✅ Azure Function App deployed and running
 - ✅ Azure Storage Account with Table Storage
 - ✅ Azure Communication Services for email
-- ✅ Service principal with required permissions
-
-### Configuration
-- ✅ Environment variables configured in Function App
-- ✅ Graph API permissions granted
-- ✅ Email receiving configured (storage1@bifocal.show)
-- ✅ Polling interval set and operational
+- ✅ SendGrid configured for inbound parse
 
 ### Testing
 - ✅ Local development environment working
@@ -113,7 +107,7 @@
 ```
 
 ### Send Email for Processing
-Send email to `storage1@bifocal.show` from registered address
+Send email to your configured SendGrid inbound address
 
 ### Check Results
 - OneDrive: `/EmailToMarkdown/YYYY/MM/DD/yyyy-MM-dd-Name-Subject.md`
@@ -125,12 +119,6 @@ Send email to `storage1@bifocal.show` from registered address
 Re-run setup script with new parameters:
 ```powershell
 .\setup-user.ps1 -UserEmail "user@example.com" -RootFolder "/NewPath" -DeliveryMethod "both"
-```
-
-### Adjust Polling Frequency
-Update via setup script:
-```powershell
-.\setup-user.ps1 -UserEmail "user@example.com" -PollingIntervalSeconds 120
 ```
 
 ### Monitor Processing
@@ -182,4 +170,4 @@ eMailToMarkdown/
 
 ---
 
-**Status**: ✅ Fully implemented, deployed, and operational. All Node.js references removed.
+**Status**: ✅ Fully implemented, deployed, and operational with SendGrid webhook integration.

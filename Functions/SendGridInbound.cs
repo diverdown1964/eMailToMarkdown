@@ -1,11 +1,9 @@
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
-using Microsoft.Graph;
 using EmailToMarkdown.Models;
 using EmailToMarkdown.Services;
 using System.Text;
-using System.Web;
 using HttpMultipartParser;
 using MimeKit;
 
@@ -16,19 +14,20 @@ public class SendGridInbound
     private readonly ILogger _logger;
     private readonly AppConfiguration _config;
     private readonly MarkdownConversionService _markdownService;
-    private readonly AzureCommunicationEmailService _emailService;
+    private readonly AzureCommunicationEmailService? _emailService;
     private readonly ConfigurationService _configService;
-    private readonly OneDriveStorageService? _oneDriveService;
+    private readonly StorageProviderFactory _storageFactory;
 
     public SendGridInbound(
         ILoggerFactory loggerFactory,
         AppConfiguration config,
         ConfigurationService configService,
-        GraphServiceClient? graphClient = null)
+        StorageProviderFactory storageFactory)
     {
         _logger = loggerFactory.CreateLogger<SendGridInbound>();
         _config = config;
         _configService = configService;
+        _storageFactory = storageFactory;
         _markdownService = new MarkdownConversionService(_logger);
 
         if (!string.IsNullOrEmpty(config.AcsConnectionString))
@@ -40,11 +39,6 @@ public class SendGridInbound
             _logger.LogWarning("ACS Connection String is empty - email sending will fail");
             _emailService = null!;
         }
-
-        if (graphClient != null)
-        {
-            _oneDriveService = new OneDriveStorageService(graphClient, _logger);
-        }
     }
 
     [Function("SendGridInbound")]
@@ -54,20 +48,20 @@ public class SendGridInbound
         _logger.LogInformation("SendGrid inbound email received - START");
 
         string from = "", to = "", subject = "No Subject", html = "";
-        
+
         try
         {
             // Log request info
             var contentType = req.Headers.TryGetValues("Content-Type", out var ctValues) ? ctValues.FirstOrDefault() : "unknown";
             _logger.LogInformation($"Content-Type: {contentType}");
             _logger.LogInformation($"Body CanSeek: {req.Body.CanSeek}, CanRead: {req.Body.CanRead}");
-            
+
             // Copy body to memory stream first
             using var ms = new MemoryStream();
             await req.Body.CopyToAsync(ms);
             _logger.LogInformation($"Body length: {ms.Length} bytes");
             ms.Position = 0;
-            
+
             // Try to parse multipart form data from SendGrid
             var parsedForm = await MultipartFormDataParser.ParseAsync(ms);
             _logger.LogInformation($"Parsed {parsedForm.Parameters.Count} parameters");
@@ -79,7 +73,7 @@ public class SendGridInbound
             {
                 _logger.LogInformation($"Param: {param.Name} (length: {param.Data?.Length ?? 0})");
                 allParams.AppendLine($"{param.Name}: {param.Data?.Length ?? 0} chars");
-                
+
                 switch (param.Name.ToLower())
                 {
                     case "from": from = param.Data; break;
@@ -90,7 +84,7 @@ public class SendGridInbound
                     case "email": rawEmail = param.Data; break; // Raw MIME when "POST raw" is enabled
                 }
             }
-            
+
             _logger.LogInformation($"All parameters received:\n{allParams.ToString()}");
 
             // If raw MIME is present, parse it with MimeKit
@@ -132,7 +126,7 @@ public class SendGridInbound
             }
 
             _logger.LogInformation($"Final HTML body length: {html?.Length ?? 0}");
-            
+
             if (string.IsNullOrEmpty(subject)) subject = "No Subject";
             var senderName = ExtractNameFromEmail(from);
             var senderEmail = ExtractEmailAddress(from);
@@ -157,39 +151,69 @@ public class SendGridInbound
             _logger.LogInformation($"Fetching user preferences for: {senderEmail}");
             var userPrefs = await _configService.GetUserPreferencesAsync(senderEmail);
             _logger.LogInformation($"User preferences retrieved. DeliveryMethod: {userPrefs?.DeliveryMethod ?? "null"}");
-            
-            var deliveryMethod = userPrefs?.DeliveryMethod ?? "email";
-            var oneDriveUserEmail = userPrefs?.OneDriveUserEmail ?? senderEmail;
-            var rootFolder = userPrefs?.RootFolder ?? "/EmailToMarkdown";
+
+            if (userPrefs == null)
+            {
+                _logger.LogWarning($"No user preferences found for {senderEmail} - user needs to register");
+                // Default to email delivery for unregistered users
+                userPrefs = new UserPreferences
+                {
+                    DeliveryMethod = "email",
+                    RootFolder = "/EmailToMarkdown"
+                };
+            }
+
+            var deliveryMethod = userPrefs.DeliveryMethod ?? "email";
+            var rootFolder = userPrefs.RootFolder ?? "/EmailToMarkdown";
 
             _logger.LogInformation($"Delivery method for {senderEmail}: {deliveryMethod}");
 
             bool emailSent = false;
             bool fileSaved = false;
+            bool requiresReauth = false;
 
-            // Handle OneDrive delivery
+            // Handle OneDrive/storage delivery
             if (deliveryMethod == "onedrive" || deliveryMethod == "both")
             {
-                if (_oneDriveService != null)
+                try
                 {
-                    fileSaved = await _oneDriveService.SaveFileAsync(
-                        oneDriveUserEmail,
+                    _logger.LogInformation($"Getting storage provider: {userPrefs.StorageProvider ?? "onedrive"}");
+                    var storageProvider = _storageFactory.GetProvider(userPrefs.StorageProvider ?? "onedrive");
+                    
+                    _logger.LogInformation($"Calling SaveFileAsync for {senderEmail}, folder: {rootFolder}, file: {fileName}");
+                    var result = await storageProvider.SaveFileAsync(
+                        senderEmail,
                         rootFolder,
                         fileName,
                         markdownContent);
 
-                    if (fileSaved)
+                    fileSaved = result.Success;
+
+                    if (result.Success)
                     {
-                        _logger.LogInformation($"File saved to OneDrive for {oneDriveUserEmail}");
+                        _logger.LogInformation($"File saved to {userPrefs.StorageProvider} for {senderEmail}: {result.FilePath}");
+
+                        // Update last successful sync
+                        userPrefs.LastSuccessfulSync = DateTimeOffset.UtcNow;
+                        await _configService.SaveUserPreferencesAsync(userPrefs);
+                    }
+                    else if (result.RequiresReauth)
+                    {
+                        _logger.LogWarning($"User {senderEmail} needs to re-authenticate: {result.ErrorMessage}");
+                        requiresReauth = true;
                     }
                     else
                     {
-                        _logger.LogError($"Failed to save file to OneDrive for {oneDriveUserEmail}");
+                        _logger.LogError($"Failed to save file: {result.ErrorMessage}");
                     }
                 }
-                else
+                catch (NotImplementedException ex)
                 {
-                    _logger.LogWarning("OneDrive service not configured - skipping OneDrive delivery");
+                    _logger.LogWarning(ex, $"Storage provider {userPrefs.StorageProvider} not yet implemented");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"Exception in storage save for {senderEmail}: {ex.Message} | InnerException: {ex.InnerException?.Message} | StackTrace: {ex.StackTrace}");
                 }
             }
 
@@ -199,19 +223,37 @@ public class SendGridInbound
                 if (_emailService != null)
                 {
                     var replySubject = $"Re: {subject}";
-                    var replyBody = deliveryMethod == "both" && fileSaved
-                        ? $@"Your email has been converted to Markdown.
+                    string replyBody;
+
+                    if (requiresReauth)
+                    {
+                        replyBody = $@"Your email has been converted to Markdown.
+
+The markdown file is attached to this email.
+
+**Important:** Your OneDrive connection has expired. Please visit the registration page to re-authenticate and restore automatic OneDrive saving.
+
+---
+Email to Markdown Service";
+                    }
+                    else if (deliveryMethod == "both" && fileSaved)
+                    {
+                        replyBody = $@"Your email has been converted to Markdown.
 
 The markdown file is attached to this email and has also been saved to your OneDrive.
 
 ---
-Email to Markdown Service"
-                        : $@"Your email has been converted to Markdown.
+Email to Markdown Service";
+                    }
+                    else
+                    {
+                        replyBody = $@"Your email has been converted to Markdown.
 
 The markdown file is attached to this email.
 
 ---
 Email to Markdown Service";
+                    }
 
                     _logger.LogInformation($"Sending email to {senderEmail}");
 
@@ -278,7 +320,7 @@ Email to Markdown Service";
             var name = email.Substring(0, start).Trim().Trim('"');
             return string.IsNullOrEmpty(name) ? "Unknown" : name;
         }
-        
+
         var atIndex = email.IndexOf('@');
         return atIndex > 0 ? email.Substring(0, atIndex) : "Unknown";
     }

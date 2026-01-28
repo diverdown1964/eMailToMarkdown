@@ -1,75 +1,214 @@
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
+using EmailToMarkdown.Models;
 using Microsoft.Extensions.Logging;
-using Microsoft.Graph;
-using Microsoft.Graph.Models;
 
 namespace EmailToMarkdown.Services;
 
-public class OneDriveStorageService
+public class OneDriveStorageService : IStorageProvider
 {
-    private readonly GraphServiceClient _graphClient;
-    private readonly ILogger? _logger;
+    private readonly TokenService _tokenService;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ILogger<OneDriveStorageService> _logger;
 
-    public OneDriveStorageService(GraphServiceClient graphClient, ILogger? logger = null)
+    public StorageProviderType ProviderType => StorageProviderType.OneDrive;
+
+    public OneDriveStorageService(
+        TokenService tokenService,
+        IHttpClientFactory httpClientFactory,
+        ILogger<OneDriveStorageService> logger)
     {
-        _graphClient = graphClient;
+        _tokenService = tokenService;
+        _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
 
-    public async Task<bool> SaveFileAsync(
+    public async Task<StorageResult> SaveFileAsync(
         string userEmail,
         string rootFolder,
         string fileName,
-        byte[] content)
+        byte[] content,
+        CancellationToken cancellationToken = default)
     {
         try
         {
+            _logger.LogInformation("Starting SaveFileAsync for {User}, folder: {Folder}, file: {File}", 
+                userEmail, rootFolder, fileName);
+            
+            // Get valid access token (will refresh if needed)
+            _logger.LogInformation("Requesting access token for {User}", userEmail);
+            var accessToken = await _tokenService.GetValidAccessTokenAsync("microsoft", userEmail);
+            
+            if (accessToken == null)
+            {
+                _logger.LogWarning("No valid token available for {User}", userEmail);
+                return StorageResult.Failed("No valid token available", requiresReauth: true);
+            }
+            
+            _logger.LogInformation("Access token retrieved successfully for {User} (length: {Length})", 
+                userEmail, accessToken.Length);
+
             // Build date-based path: /RootFolder/YYYY/MM/DD/filename.md
             var now = DateTime.UtcNow;
             var datePath = $"{now:yyyy}/{now:MM}/{now:dd}";
             var fullPath = $"{rootFolder.TrimEnd('/')}/{datePath}/{fileName}";
 
-            _logger?.LogInformation($"Saving file to OneDrive: {userEmail} -> {fullPath}");
+            _logger.LogInformation("Saving file to OneDrive: {User} -> {Path}", userEmail, fullPath);
 
-            // Graph SDK v5: First get the user's drive, then upload via Drives[driveId]
-            var drive = await _graphClient.Users[userEmail].Drive.GetAsync();
-            if (drive?.Id == null)
+            // Use Graph API directly with the delegated access token
+            var httpClient = _httpClientFactory.CreateClient("Graph");
+            httpClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", accessToken);
+
+            // Upload to /me/drive (user's own drive with delegated permission)
+            var uploadUrl = $"https://graph.microsoft.com/v1.0/me/drive/root:{fullPath}:/content";
+            _logger.LogInformation("Upload URL: {Url}", uploadUrl);
+
+            using var requestContent = new ByteArrayContent(content);
+            requestContent.Headers.ContentType = new MediaTypeHeaderValue("text/markdown");
+
+            _logger.LogInformation("Sending PUT request to Graph API for {User}", userEmail);
+            var response = await httpClient.PutAsync(uploadUrl, requestContent, cancellationToken);
+
+            _logger.LogInformation("Graph API response status: {StatusCode}", response.StatusCode);
+            
+            if (!response.IsSuccessStatusCode)
             {
-                _logger?.LogError($"Could not get drive for user {userEmail}");
-                return false;
-            }
+                var error = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogError("Failed to upload to OneDrive for {User}: {Status} {Error}",
+                    userEmail, response.StatusCode, error);
 
-            // Upload file using Graph API
-            // The path-based upload will create folders automatically
-            using var stream = new MemoryStream(content);
-
-            await _graphClient.Drives[drive.Id]
-                .Items["root"]
-                .ItemWithPath(fullPath)
-                .Content
-                .PutAsync(stream);
-
-            _logger?.LogInformation($"File saved successfully: {fullPath}");
-            return true;
-        }
-        catch (Microsoft.Graph.Models.ODataErrors.ODataError odataEx)
-        {
-            _logger?.LogError($"Failed to save file to OneDrive: {odataEx.Message}");
-            _logger?.LogError($"OData Error Code: {odataEx.Error?.Code}");
-            _logger?.LogError($"OData Error Message: {odataEx.Error?.Message}");
-            if (odataEx.Error?.InnerError?.AdditionalData != null)
-            {
-                foreach (var kvp in odataEx.Error.InnerError.AdditionalData)
+                // Check if it's an auth error
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
+                    response.StatusCode == System.Net.HttpStatusCode.Forbidden)
                 {
-                    _logger?.LogError($"Inner Error {kvp.Key}: {kvp.Value}");
+                    return StorageResult.Failed("Authentication failed", requiresReauth: true);
                 }
+
+                return StorageResult.Failed($"Upload failed: {response.StatusCode}");
             }
-            return false;
+
+            var driveItem = await response.Content.ReadFromJsonAsync<DriveItemResponse>(
+                cancellationToken: cancellationToken);
+
+            _logger.LogInformation("File saved successfully: {Path}", fullPath);
+
+            return StorageResult.Succeeded(fullPath, driveItem?.Id, driveItem?.WebUrl);
         }
         catch (Exception ex)
         {
-            _logger?.LogError($"Failed to save file to OneDrive: {ex.Message}");
-            _logger?.LogError($"Exception details: {ex}");
+            _logger.LogError(ex, "Failed to save file to OneDrive for {User}", userEmail);
+            return StorageResult.Failed(ex.Message);
+        }
+    }
+
+    public async Task<bool> ValidateConnectionAsync(
+        string userEmail,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var accessToken = await _tokenService.GetValidAccessTokenAsync("microsoft", userEmail);
+            if (accessToken == null) return false;
+
+            var httpClient = _httpClientFactory.CreateClient("Graph");
+            httpClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", accessToken);
+
+            var response = await httpClient.GetAsync(
+                "https://graph.microsoft.com/v1.0/me/drive",
+                cancellationToken);
+
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to validate OneDrive connection for {User}", userEmail);
             return false;
         }
     }
+
+    public async Task<IEnumerable<FolderInfo>> ListFoldersAsync(
+        string userEmail,
+        string parentPath,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var accessToken = await _tokenService.GetValidAccessTokenAsync("microsoft", userEmail);
+            if (accessToken == null) return Enumerable.Empty<FolderInfo>();
+
+            var httpClient = _httpClientFactory.CreateClient("Graph");
+            httpClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", accessToken);
+
+            var pathSegment = string.IsNullOrEmpty(parentPath) || parentPath == "/"
+                ? "root"
+                : $"root:{parentPath}:";
+
+            var url = $"https://graph.microsoft.com/v1.0/me/drive/{pathSegment}/children?$filter=folder ne null&$select=id,name,folder,parentReference";
+
+            var response = await httpClient.GetFromJsonAsync<DriveItemListResponse>(url, cancellationToken);
+
+            return response?.Value?.Select(item => new FolderInfo
+            {
+                Id = item.Id,
+                Name = item.Name,
+                Path = (item.ParentReference?.Path ?? "") + "/" + item.Name,
+                HasChildren = (item.Folder?.ChildCount ?? 0) > 0
+            }) ?? Enumerable.Empty<FolderInfo>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to list folders for {User}", userEmail);
+            return Enumerable.Empty<FolderInfo>();
+        }
+    }
+}
+
+// Response models for Graph API
+internal class DriveItemResponse
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("webUrl")]
+    public string WebUrl { get; set; } = string.Empty;
+}
+
+internal class DriveItemListResponse
+{
+    [JsonPropertyName("value")]
+    public List<DriveItem>? Value { get; set; }
+}
+
+internal class DriveItem
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("folder")]
+    public FolderFacet? Folder { get; set; }
+
+    [JsonPropertyName("parentReference")]
+    public ParentReference? ParentReference { get; set; }
+}
+
+internal class FolderFacet
+{
+    [JsonPropertyName("childCount")]
+    public int ChildCount { get; set; }
+}
+
+internal class ParentReference
+{
+    [JsonPropertyName("path")]
+    public string Path { get; set; } = string.Empty;
 }

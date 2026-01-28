@@ -45,35 +45,24 @@ public class SendGridInbound
     public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "inbound")] HttpRequestData req)
     {
-        _logger.LogInformation("SendGrid inbound email received - START");
+        _logger.LogInformation("Inbound email received");
 
         string from = "", to = "", subject = "No Subject", html = "";
 
         try
         {
-            // Log request info
-            var contentType = req.Headers.TryGetValues("Content-Type", out var ctValues) ? ctValues.FirstOrDefault() : "unknown";
-            _logger.LogInformation($"Content-Type: {contentType}");
-            _logger.LogInformation($"Body CanSeek: {req.Body.CanSeek}, CanRead: {req.Body.CanRead}");
-
             // Copy body to memory stream first
             using var ms = new MemoryStream();
             await req.Body.CopyToAsync(ms);
-            _logger.LogInformation($"Body length: {ms.Length} bytes");
             ms.Position = 0;
 
             // Try to parse multipart form data from SendGrid
             var parsedForm = await MultipartFormDataParser.ParseAsync(ms);
-            _logger.LogInformation($"Parsed {parsedForm.Parameters.Count} parameters");
 
             string? rawEmail = null;
-            var allParams = new System.Text.StringBuilder();
 
             foreach (var param in parsedForm.Parameters)
             {
-                _logger.LogInformation($"Param: {param.Name} (length: {param.Data?.Length ?? 0})");
-                allParams.AppendLine($"{param.Name}: {param.Data?.Length ?? 0} chars");
-
                 switch (param.Name.ToLower())
                 {
                     case "from": from = param.Data; break;
@@ -85,12 +74,9 @@ public class SendGridInbound
                 }
             }
 
-            _logger.LogInformation($"All parameters received:\n{allParams.ToString()}");
-
             // If raw MIME is present, parse it with MimeKit
             if (!string.IsNullOrEmpty(rawEmail))
             {
-                _logger.LogInformation("Raw MIME email detected, parsing with MimeKit");
                 try
                 {
                     using var mimeStream = new MemoryStream(Encoding.UTF8.GetBytes(rawEmail));
@@ -116,46 +102,67 @@ public class SendGridInbound
                     {
                         html = mimeMessage.TextBody ?? "";
                     }
-
-                    _logger.LogInformation($"MimeKit parsed - From: {from}, Subject: {subject}, Body length: {html?.Length ?? 0}");
                 }
                 catch (Exception mimeEx)
                 {
-                    _logger.LogError($"Failed to parse MIME message: {mimeEx.Message}");
+                    _logger.LogError(mimeEx, "Failed to parse MIME message");
                 }
             }
 
-            _logger.LogInformation($"Final HTML body length: {html?.Length ?? 0}");
-
             if (string.IsNullOrEmpty(subject)) subject = "No Subject";
-            var senderName = ExtractNameFromEmail(from);
-            var senderEmail = ExtractEmailAddress(from);
 
-            _logger.LogInformation($"Processing email from {senderEmail} ({senderName}) - Subject: {subject}");
+            // The forwarder/subscriber info - used for user preferences lookup
+            var forwarderName = ExtractNameFromEmail(from);
+            var forwarderEmail = ExtractEmailAddress(from);
 
-            // Convert to markdown
-            _logger.LogInformation("Starting markdown conversion...");
+            // Display info for markdown output - defaults to forwarder, may be overwritten for forwards
+            var displaySenderName = forwarderName;
+            var displaySenderEmail = forwarderEmail;
+            var receivedDateTime = DateTime.UtcNow;
+
+            // Handle forwarded emails - extract original sender metadata for display only
+            if (MarkdownConversionService.IsForwardedEmail(subject))
+            {
+                // Strip FW:/Fwd: prefix from subject
+                subject = MarkdownConversionService.StripForwardingPrefix(subject);
+
+                // Try to extract original sender metadata from the forwarding header
+                var originalMetadata = _markdownService.ExtractForwardedMetadata(html);
+                if (originalMetadata != null)
+                {
+                    if (!string.IsNullOrEmpty(originalMetadata.SenderEmail))
+                    {
+                        displaySenderName = !string.IsNullOrEmpty(originalMetadata.SenderName)
+                            ? originalMetadata.SenderName
+                            : originalMetadata.SenderEmail.Split('@')[0];
+                        displaySenderEmail = originalMetadata.SenderEmail;
+                    }
+                    if (originalMetadata.SentDate.HasValue)
+                    {
+                        receivedDateTime = originalMetadata.SentDate.Value;
+                    }
+                }
+            }
+
+            _logger.LogInformation("Processing email from {Email} - Subject: {Subject}", forwarderEmail, subject);
+
+            // Convert to markdown - use display sender (original sender for forwards)
             var markdownContent = _markdownService.ConvertToMarkdownBytes(
                 subject,
-                senderName,
-                senderEmail,
-                DateTime.UtcNow,
+                displaySenderName,
+                displaySenderEmail,
+                receivedDateTime,
                 html);
-            _logger.LogInformation($"Markdown conversion complete. Content size: {markdownContent?.Length ?? 0} bytes");
 
-            // Generate filename
-            var fileName = GenerateFileName(DateTime.UtcNow, senderName, subject);
-            _logger.LogInformation($"Generated filename: {fileName}");
+            // Generate filename using the original date and sender for forwarded emails
+            var fileName = GenerateFileName(receivedDateTime, displaySenderName, subject);
 
-            // Get user preferences to determine delivery method
-            _logger.LogInformation($"Fetching user preferences for: {senderEmail}");
-            var userPrefs = await _configService.GetUserPreferencesAsync(senderEmail);
-            _logger.LogInformation($"User preferences retrieved. DeliveryMethod: {userPrefs?.DeliveryMethod ?? "null"}");
+            // Get user preferences using FORWARDER's email (the subscriber), not the original sender
+            var userPrefs = await _configService.GetUserPreferencesAsync(forwarderEmail);
 
             if (userPrefs == null)
             {
-                _logger.LogWarning($"No user preferences found for {senderEmail} - user needs to register");
-                // Default to email delivery for unregistered users
+                _logger.LogWarning("No user preferences found for {Email}", forwarderEmail);
                 userPrefs = new UserPreferences
                 {
                     DeliveryMethod = "email",
@@ -164,147 +171,235 @@ public class SendGridInbound
             }
 
             var deliveryMethod = userPrefs.DeliveryMethod ?? "email";
-            var rootFolder = userPrefs.RootFolder ?? "/EmailToMarkdown";
 
-            _logger.LogInformation($"Delivery method for {senderEmail}: {deliveryMethod}");
+            // Track results for all storage providers
+            var storageResults = new List<(string Provider, string Email, StorageResult Result)>();
+            var requiresReauth = new List<string>();
 
-            bool emailSent = false;
-            bool fileSaved = false;
-            bool requiresReauth = false;
-
-            // Handle OneDrive/storage delivery
-            if (deliveryMethod == "onedrive" || deliveryMethod == "both")
+            // Handle storage delivery - send to ALL configured providers
+            if (deliveryMethod == "onedrive" || deliveryMethod == "both" || deliveryMethod == "storage")
             {
                 try
                 {
-                    _logger.LogInformation($"Getting storage provider: {userPrefs.StorageProvider ?? "onedrive"}");
-                    var storageProvider = _storageFactory.GetProvider(userPrefs.StorageProvider ?? "onedrive");
-                    
-                    _logger.LogInformation($"Calling SaveFileAsync for {senderEmail}, folder: {rootFolder}, file: {fileName}");
-                    var result = await storageProvider.SaveFileAsync(
-                        senderEmail,
-                        rootFolder,
-                        fileName,
-                        markdownContent);
+                    // Get all storage connections for the user (including linked identities)
+                    var allConnections = await _configService.GetAllStorageConnectionsForUserAsync(forwarderEmail);
 
-                    fileSaved = result.Success;
+                    foreach (var kvp in allConnections)
+                    {
+                        var providerName = kvp.Key;
+                        var connection = kvp.Value;
+                        var rootFolder = connection.RootFolder ?? "/EmailToMarkdown";
 
-                    if (result.Success)
-                    {
-                        _logger.LogInformation($"File saved to {userPrefs.StorageProvider} for {senderEmail}: {result.FilePath}");
+                        try
+                        {
+                            var storageProvider = _storageFactory.GetProvider(providerName);
 
-                        // Update last successful sync
-                        userPrefs.LastSuccessfulSync = DateTimeOffset.UtcNow;
-                        await _configService.SaveUserPreferencesAsync(userPrefs);
+                            var result = await storageProvider.SaveFileAsync(
+                                connection.PartitionKey, // Use the email associated with this connection
+                                rootFolder,
+                                fileName,
+                                markdownContent);
+
+                            storageResults.Add((providerName, connection.PartitionKey, result));
+
+                            if (result.Success)
+                            {
+                                _logger.LogInformation("File saved to {Provider}: {Path}", providerName, result.FilePath);
+                                connection.LastSuccessfulSync = DateTimeOffset.UtcNow;
+                                await _configService.SaveStorageConnectionAsync(connection.PartitionKey, providerName, connection);
+                            }
+                            else if (result.RequiresReauth)
+                            {
+                                _logger.LogWarning("Re-authentication required for {Provider}: {Error}", providerName, result.ErrorMessage);
+                                requiresReauth.Add(providerName);
+                            }
+                            else
+                            {
+                                _logger.LogError("Failed to save to {Provider}: {Error}", providerName, result.ErrorMessage);
+                            }
+                        }
+                        catch (NotImplementedException ex)
+                        {
+                            _logger.LogWarning(ex, $"Storage provider {providerName} not yet implemented");
+                            storageResults.Add((providerName, connection.PartitionKey, StorageResult.Failed($"Provider {providerName} not yet implemented")));
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"Exception saving to {providerName} for {connection.PartitionKey}: {ex.Message}");
+                            storageResults.Add((providerName, connection.PartitionKey, StorageResult.Failed(ex.Message)));
+                        }
                     }
-                    else if (result.RequiresReauth)
+
+                    // If no connections found, fall back to legacy preferences-based storage
+                    if (allConnections.Count == 0 && !string.IsNullOrEmpty(userPrefs.StorageProvider))
                     {
-                        _logger.LogWarning($"User {senderEmail} needs to re-authenticate: {result.ErrorMessage}");
-                        requiresReauth = true;
+                        var rootFolder = userPrefs.RootFolder ?? "/EmailToMarkdown";
+
+                        try
+                        {
+                            var storageProvider = _storageFactory.GetProvider(userPrefs.StorageProvider);
+                            var result = await storageProvider.SaveFileAsync(
+                                forwarderEmail,
+                                rootFolder,
+                                fileName,
+                                markdownContent);
+
+                            storageResults.Add((userPrefs.StorageProvider, forwarderEmail, result));
+
+                            if (result.Success)
+                            {
+                                userPrefs.LastSuccessfulSync = DateTimeOffset.UtcNow;
+                                await _configService.SaveUserPreferencesAsync(userPrefs);
+                            }
+                            else if (result.RequiresReauth)
+                            {
+                                requiresReauth.Add(userPrefs.StorageProvider);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Exception in legacy storage save");
+                            storageResults.Add((userPrefs.StorageProvider, forwarderEmail, StorageResult.Failed(ex.Message)));
+                        }
                     }
-                    else
-                    {
-                        _logger.LogError($"Failed to save file: {result.ErrorMessage}");
-                    }
-                }
-                catch (NotImplementedException ex)
-                {
-                    _logger.LogWarning(ex, $"Storage provider {userPrefs.StorageProvider} not yet implemented");
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, $"Exception in storage save for {senderEmail}: {ex.Message} | InnerException: {ex.InnerException?.Message} | StackTrace: {ex.StackTrace}");
+                    _logger.LogError(ex, "Exception retrieving storage connections");
                 }
             }
 
-            // Handle email delivery
-            if (deliveryMethod == "email" || deliveryMethod == "both")
+            // Determine storage success - at least one provider succeeded
+            var successfulSaves = storageResults.Where(r => r.Result.Success).ToList();
+            var failedSaves = storageResults.Where(r => !r.Result.Success).ToList();
+            bool anyStorageSuccess = successfulSaves.Any();
+
+            bool emailSent = false;
+
+            // Handle email delivery - send if:
+            // 1. Delivery method includes email, OR
+            // 2. Any storage saves failed (send notification with attachment)
+            bool shouldSendEmail = deliveryMethod == "email" || deliveryMethod == "both" || failedSaves.Any();
+
+            if (shouldSendEmail && _emailService != null)
             {
-                if (_emailService != null)
+                var replySubject = $"Re: {subject}";
+                string replyBody;
+
+                if (failedSaves.Any() && deliveryMethod != "email")
                 {
-                    var replySubject = $"Re: {subject}";
-                    string replyBody;
-
-                    if (requiresReauth)
+                    // Build failure notification
+                    var failureDetails = new StringBuilder();
+                    failureDetails.AppendLine("**Storage Save Failures:**\n");
+                    foreach (var failure in failedSaves)
                     {
-                        replyBody = $@"Your email has been converted to Markdown.
+                        var reauthNote = failure.Result.RequiresReauth ? " (re-authentication required)" : "";
+                        failureDetails.AppendLine($"- {failure.Provider}: {failure.Result.ErrorMessage}{reauthNote}");
+                    }
+
+                    if (successfulSaves.Any())
+                    {
+                        failureDetails.AppendLine("\n**Successful Saves:**");
+                        foreach (var saved in successfulSaves)
+                        {
+                            failureDetails.AppendLine($"- {saved.Provider}: {saved.Result.FilePath}");
+                        }
+                    }
+
+                    if (requiresReauth.Any())
+                    {
+                        failureDetails.AppendLine($"\n**Action Required:** Please visit the registration page to re-authenticate your {string.Join(", ", requiresReauth)} connection(s).");
+                    }
+
+                    replyBody = $@"Your email has been converted to Markdown.
+
+The markdown file is attached to this email because some storage saves failed.
+
+{failureDetails}
+
+---
+Email to Markdown Service";
+                }
+                else if (requiresReauth.Any())
+                {
+                    replyBody = $@"Your email has been converted to Markdown.
 
 The markdown file is attached to this email.
 
-**Important:** Your OneDrive connection has expired. Please visit the registration page to re-authenticate and restore automatic OneDrive saving.
+**Important:** Your {string.Join(", ", requiresReauth)} connection has expired. Please visit the registration page to re-authenticate and restore automatic saving.
 
 ---
 Email to Markdown Service";
-                    }
-                    else if (deliveryMethod == "both" && fileSaved)
-                    {
-                        replyBody = $@"Your email has been converted to Markdown.
+                }
+                else if (deliveryMethod == "both" && anyStorageSuccess)
+                {
+                    var savedTo = string.Join(", ", successfulSaves.Select(s => s.Provider));
+                    replyBody = $@"Your email has been converted to Markdown.
 
-The markdown file is attached to this email and has also been saved to your OneDrive.
-
----
-Email to Markdown Service";
-                    }
-                    else
-                    {
-                        replyBody = $@"Your email has been converted to Markdown.
-
-The markdown file is attached to this email.
+The markdown file is attached to this email and has also been saved to your {savedTo}.
 
 ---
 Email to Markdown Service";
-                    }
-
-                    _logger.LogInformation($"Sending email to {senderEmail}");
-
-                    emailSent = await _emailService.SendEmailWithAttachmentAsync(
-                        senderEmail,
-                        senderName,
-                        replySubject,
-                        replyBody,
-                        fileName,
-                        markdownContent);
-
-                    if (emailSent)
-                    {
-                        _logger.LogInformation($"Reply sent successfully to {senderEmail}");
-                    }
-                    else
-                    {
-                        _logger.LogError($"Failed to send reply to {senderEmail}");
-                    }
                 }
                 else
                 {
-                    _logger.LogWarning("Email service not configured - skipping email delivery");
+                    replyBody = $@"Your email has been converted to Markdown.
+
+The markdown file is attached to this email.
+
+---
+Email to Markdown Service";
+                }
+
+                emailSent = await _emailService.SendEmailWithAttachmentAsync(
+                    forwarderEmail,
+                    forwarderName,
+                    replySubject,
+                    replyBody,
+                    fileName,
+                    markdownContent);
+
+                if (!emailSent)
+                {
+                    _logger.LogError("Failed to send reply email to {Email}", forwarderEmail);
                 }
             }
 
             // Determine overall success
+            // Success if: email delivery worked when required, OR at least one storage save worked
             bool success = deliveryMethod switch
             {
                 "email" => emailSent,
-                "onedrive" => fileSaved,
-                "both" => emailSent || fileSaved, // Success if at least one worked
-                _ => emailSent // Default to email behavior
+                "onedrive" or "storage" => anyStorageSuccess,
+                "both" => emailSent || anyStorageSuccess, // Success if at least one method worked
+                _ => emailSent || anyStorageSuccess // Default: any success counts
             };
 
             if (success)
             {
                 var response = req.CreateResponse(System.Net.HttpStatusCode.OK);
-                await response.WriteStringAsync("Email processed successfully");
+                var summary = new StringBuilder("Email processed successfully.");
+                if (successfulSaves.Any())
+                {
+                    summary.Append($" Saved to: {string.Join(", ", successfulSaves.Select(s => s.Provider))}.");
+                }
+                if (failedSaves.Any())
+                {
+                    summary.Append($" Failed: {string.Join(", ", failedSaves.Select(f => f.Provider))}.");
+                }
+                await response.WriteStringAsync(summary.ToString());
                 return response;
             }
             else
             {
                 var response = req.CreateResponse(System.Net.HttpStatusCode.InternalServerError);
-                await response.WriteStringAsync("Failed to process email");
+                await response.WriteStringAsync("Failed to process email - no delivery methods succeeded");
                 return response;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError($"Error processing inbound email: {ex.Message} | StackTrace: {ex.StackTrace}");
+            _logger.LogError(ex, "Error processing inbound email");
             var response = req.CreateResponse(System.Net.HttpStatusCode.InternalServerError);
             await response.WriteStringAsync($"Error: {ex.Message}");
             return response;

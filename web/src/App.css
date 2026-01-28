@@ -97,7 +97,7 @@ h1 {
   color: white;
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
 }
@@ -113,8 +113,31 @@ h1 {
   color: #333;
 }
 
-.btn-secondary:hover {
+.btn-secondary:hover:not(:disabled) {
   background: #e0e0e0;
+}
+
+.btn-microsoft {
+  background: #2f2f2f;
+  color: white;
+}
+
+.btn-microsoft:hover:not(:disabled) {
+  background: #1a1a1a;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.btn-google {
+  background: white;
+  color: #333;
+  border: 1px solid #ddd;
+}
+
+.btn-google:hover:not(:disabled) {
+  background: #f8f8f8;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 /* Form elements */
@@ -212,10 +235,237 @@ h1 {
   border-top-color: white;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+.spinner-small {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(102, 126, 234, 0.3);
+  border-top-color: #667eea;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 8px;
 }
 
 @keyframes spin {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Dashboard styles */
+.dashboard {
+  margin-top: 24px;
+}
+
+.loading-state {
+  text-align: center;
+  padding: 32px;
+}
+
+.loading-state p {
+  color: #666;
+  margin-top: 16px;
+}
+
+.sign-in-card {
+  text-align: center;
+}
+
+.sign-in-card h2 {
+  font-size: 20px;
+  margin-bottom: 12px;
+  color: #1a1a2e;
+}
+
+.sign-in-card p {
+  color: #666;
+  margin-bottom: 24px;
+}
+
+.sign-in-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.user-header {
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #eee;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.user-email {
+  color: #333;
+  font-weight: 500;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #667eea;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0;
+  width: auto;
+  flex-shrink: 0;
+}
+
+.btn-link:hover {
+  text-decoration: underline;
+}
+
+.instructions-card {
+  background: #f0f7ff;
+  border: 1px solid #cce5ff;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.instructions-card h3 {
+  font-size: 16px;
+  color: #1a1a2e;
+  margin-bottom: 8px;
+}
+
+.instructions-card p {
+  color: #666;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.section-title {
+  font-size: 16px;
+  color: #666;
+  margin-bottom: 16px;
+  font-weight: 600;
+}
+
+/* Provider cards */
+.provider-card {
+  border: 2px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  transition: border-color 0.2s;
+}
+
+.provider-card.connected {
+  border-color: #10b981;
+  background: #f0fdf4;
+}
+
+.provider-card.disabled {
+  opacity: 0.6;
+}
+
+.provider-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.provider-name {
+  font-weight: 600;
+  color: #1a1a2e;
+  flex-grow: 1;
+}
+
+.status-badge {
+  background: #10b981;
+  color: white;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.coming-soon-badge {
+  background: #9ca3af;
+  color: white;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.requires-badge {
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.provider-body {
+  color: #666;
+  font-size: 14px;
+}
+
+.provider-body p {
+  margin-bottom: 12px;
+}
+
+.provider-body .last-sync {
+  font-size: 12px;
+  color: #888;
+}
+
+.btn-sm {
+  padding: 8px 16px;
+  font-size: 14px;
+  width: auto;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* User account display */
+.user-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.user-account:not(:last-child) {
+  border-bottom: 1px solid #eee;
+}
+
+.user-account .user-email {
+  flex-grow: 1;
+}
+
+.user-account .btn-link {
+  margin-left: auto;
+}
+
+/* Folder display with edit */
+.folder-display {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.folder-display p {
+  margin: 0;
+  flex-grow: 1;
+}
+
+.btn-edit {
+  font-size: 13px;
+  padding: 4px 8px;
 }

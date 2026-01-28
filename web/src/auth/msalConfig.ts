@@ -13,7 +13,7 @@ export const msalConfig: Configuration = {
     navigateToLoginRequestUrl: true
   },
   cache: {
-    cacheLocation: 'sessionStorage',
+    cacheLocation: 'localStorage', // Persist across browser sessions
     storeAuthStateInCookie: false
   },
   system: {
@@ -39,9 +39,18 @@ export const msalConfig: Configuration = {
   }
 }
 
+// Basic login - just get user identity
 export const loginRequest = {
+  scopes: ['User.Read']
+}
+
+// OneDrive consent - request when user clicks "Connect to OneDrive"
+export const oneDriveConsentRequest = {
   scopes: ['User.Read', 'Files.ReadWrite', 'offline_access']
 }
+
+// Future: Google Drive scopes
+// export const googleDriveConsentRequest = { ... }
 
 export const graphConfig = {
   graphMeEndpoint: 'https://graph.microsoft.com/v1.0/me'

@@ -3,171 +3,240 @@
 ## ✅ Completed Implementation
 
 ### Architecture
-- **Platform**: .NET 8 with Azure Functions V4
+- **Platform**: .NET 8 with Azure Functions V4 (Isolated Worker)
 - **Language**: C# with modern features
 - **Pattern**: Dependency injection with service-oriented architecture
-- **Storage**: Azure Table Storage for configuration
+- **Storage**: Azure Table Storage for configuration and tokens
+- **Frontend**: React with TypeScript (Azure Static Web Apps)
 
 ### Core Components
 
 #### 1. Azure Functions
 - **SendGridInbound**: HTTP-triggered function that receives webhooks from SendGrid
-  - Processes incoming emails in real-time
-  - Validates sender against registered users
+  - Processes incoming emails in real-time via webhook
+  - Saves to ALL configured storage providers
+  - Sends email notifications for failed saves
+  - Extracts original sender from forwarded emails
+
+- **AuthRegister**: Handles user registration with OAuth tokens
+- **AuthStatus**: Returns user registration status
+- **AuthProviders**: Lists connected storage providers
+- **AuthValidate**: Validates storage connections
+- **AuthRevoke**: Revokes storage provider connections
 
 #### 2. Service Layer
 
 **ConfigurationService**
 - Manages user preferences from Azure Table Storage
-- Handles subscription validation
+- Handles storage connections per provider
+- Identity linking across email addresses
 - Configuration lookup by email address
 
-**GraphEmailService**
-- Microsoft Graph API integration for email operations
-- Fetches unread emails with full content
-- Marks emails as read after processing
-- Sends confirmation emails with attachments
+**TokenService**
+- OAuth token management with encryption
+- Authorization code exchange (PKCE flow)
+- Automatic token refresh
+- Multi-provider support (Microsoft, Google)
+
+**TokenEncryptionService**
+- ASP.NET Core Data Protection API
+- Azure Blob Storage key persistence
+- Secure token encryption at rest
 
 **MarkdownConversionService**
 - Converts HTML email content to clean markdown
-- Uses ReverseMarkdown and Pandoc for conversion
+- Uses ReverseMarkdown for conversion
 - Removes unwanted elements (signatures, forwarding headers, tracking pixels)
+- Extracts metadata from forwarded emails
 - Preserves formatting and structure
 
 **OneDriveStorageService**
 - Microsoft Graph API integration for OneDrive
 - Creates date-based folder structure (YYYY/MM/DD)
 - Generates sanitized filenames from email metadata
-- Handles file creation and conflict resolution
+- Handles file creation with delegated permissions
 
-**EmailOrchestrationService**
-- Coordinates the complete workflow
-- Validates user subscriptions
-- Manages processing state in Azure Table Storage
-- Prevents duplicate processing
+**GoogleDriveStorageService**
+- Google Drive API v3 integration
+- Creates folder hierarchy as needed
+- Multipart file uploads
+- File update/replace for existing files
+
+**StorageProviderFactory**
+- Factory pattern for storage providers
+- Routes to appropriate provider by name
+- Extensible for future providers
+
+**AzureCommunicationEmailService**
+- Email sending via Azure Communication Services
+- Supports attachments (markdown files)
+- Failure notifications with error details
 
 #### 3. Data Models
 
 **AppConfiguration**
 - Application-wide settings
-- Graph API credentials
-- Email configuration
+- Microsoft OAuth credentials
+- Google OAuth credentials
 - Storage account settings
-- Polling interval configuration
 
 **UserPreferences**
 - Per-user settings stored in Table Storage
-- Email address (partition key)
-- OneDrive destination account
-- Root folder path
-- Delivery method (email/onedrive/both)
-- Storage provider selection
+- Email address, delivery method, root folder
+- Legacy support for backward compatibility
 
-#### 4. User Management
+**UserStorageConnection**
+- Per-provider storage configuration
+- Root folder, folder ID, drive ID
+- Last successful sync timestamp
 
-**setup-user.ps1** - PowerShell script for user registration
-- Adds/updates users in UserPreferences table
-- Configures OneDrive destination and preferences
-- Updates Function App polling settings
-- Validates Azure resources
+**UserToken**
+- Encrypted OAuth tokens
+- Access token expiry tracking
+- Refresh failure count for auto-invalidation
+
+**UserIdentityLink**
+- Links between email identities
+- Allows multiple emails to share storage
+
+#### 4. Web Frontend
+
+**StorageDashboard (React)**
+- OAuth login for Microsoft and Google
+- PKCE authorization code flow
+- Connection status display
+- Revoke/disconnect functionality
 
 ### Key Features Implemented
 
-- ✅ Subscriber-based access control
-- ✅ Polling-based email processing (no webhooks)
+- ✅ Multi-provider storage (OneDrive + Google Drive)
+- ✅ Save to ALL connected providers simultaneously
+- ✅ Web-based OAuth registration
+- ✅ Authorization code flow with PKCE
+- ✅ Automatic token refresh
+- ✅ Email notifications for failed saves
+- ✅ Forwarded email metadata extraction
 - ✅ HTML to Markdown conversion with cleanup
-- ✅ OneDrive integration with date-based organization
-- ✅ Configurable delivery methods (email/OneDrive/both)
-- ✅ Duplicate prevention via ProcessedEmails table
-- ✅ Email confirmation with markdown attachment
-- ✅ Multi-user support with individual preferences
-- ✅ Obsidian vault integration support
+- ✅ Date-based folder organization
+- ✅ Identity linking across providers
+- ✅ Encrypted token storage
+- ✅ Detailed error messages in notifications
 
 ## 🚀 Deployment Status
 
 ### Infrastructure
-- ✅ Azure AD App Registration configured
-- ✅ Azure Function App deployed and running
+- ✅ Azure AD App Registration (Microsoft OAuth)
+- ✅ Google Cloud Console OAuth credentials
+- ✅ Azure Function App (emailtomarkdown-func)
+- ✅ Azure Static Web App (frontend)
 - ✅ Azure Storage Account with Table Storage
 - ✅ Azure Communication Services for email
-- ✅ SendGrid configured for inbound parse
+- ✅ SendGrid Inbound Parse configured
 
 ### Testing
 - ✅ Local development environment working
 - ✅ Azure deployment successful
 - ✅ End-to-end email processing verified
 - ✅ OneDrive file creation tested
-- ✅ Multi-user scenarios validated
+- ✅ Google Drive file creation tested
+- ✅ Multi-provider simultaneous saves tested
+- ✅ Token refresh verified
+- ✅ Failure notifications tested
 
 ## 📝 Usage
 
-### Register New User
+### Register via Web UI
+1. Visit: https://icy-ocean-04b9b9b0f.4.azurestaticapps.net
+2. Enter your email address
+3. Connect OneDrive and/or Google Drive
+4. Authorize via OAuth
+
+### Alternative: PowerShell
 ```powershell
 .\setup-user.ps1 -UserEmail "user@example.com"
 ```
 
-### Send Email for Processing
-Send email to your configured SendGrid inbound address
+### Forward Email for Processing
+Forward any email to your configured SendGrid inbound address
 
 ### Check Results
 - OneDrive: `/EmailToMarkdown/YYYY/MM/DD/yyyy-MM-dd-Name-Subject.md`
-- Email: Confirmation with markdown attachment
+- Google Drive: `EmailToMarkdown/YYYY/MM/DD/yyyy-MM-dd-Name-Subject.md`
+- Email: Notification if any saves failed (with attachment)
 
 ## 🔧 Maintenance
 
-### Update User Preferences
-Re-run setup script with new parameters:
-```powershell
-.\setup-user.ps1 -UserEmail "user@example.com" -RootFolder "/NewPath" -DeliveryMethod "both"
-```
+### Update Storage Connections
+Use the web UI to disconnect and reconnect providers
 
 ### Monitor Processing
 - View Azure Function logs in portal
-- Check ProcessedEmails table for processing history
-- Review Application Insights for errors
+- Check Application Insights for errors
+- Review UserTokens table for auth issues
+
+### Common Issues
+- **Token expired**: Re-authenticate via web UI
+- **Storage quota exceeded**: Clear space or use different provider
+- **Deployment fails**: Rename .sln file before deploying (see AZURE_FUNCTIONS_DEPLOYMENT.md)
 
 ## 📚 Documentation
 
 - [README.md](../README.md) - Complete user guide
 - [QUICK_START.md](../QUICK_START.md) - Quick setup instructions
+- [AZURE_FUNCTIONS_DEPLOYMENT.md](./AZURE_FUNCTIONS_DEPLOYMENT.md) - Deployment troubleshooting
 
 ## 📁 Current Project Structure
 
 ```
 eMailToMarkdown/
 ├── Functions/
-│   └── EmailPoller.cs              # Timer-triggered email processor
+│   ├── SendGridInbound.cs          # Email webhook processor
+│   └── AuthFunctions.cs            # OAuth endpoints
 ├── Services/
 │   ├── ConfigurationService.cs
-│   ├── EmailOrchestrationService.cs
-│   ├── GraphEmailService.cs
+│   ├── TokenService.cs
+│   ├── TokenEncryptionService.cs
 │   ├── MarkdownConversionService.cs
-│   └── OneDriveStorageService.cs
+│   ├── OneDriveStorageService.cs
+│   ├── GoogleDriveStorageService.cs
+│   ├── StorageProviderFactory.cs
+│   └── AzureCommunicationEmailService.cs
 ├── Models/
 │   ├── AppConfiguration.cs
-│   └── UserPreferences.cs
+│   ├── UserPreferences.cs
+│   ├── UserStorageConnection.cs
+│   ├── UserToken.cs
+│   ├── UserIdentityLink.cs
+│   └── StorageResult.cs
+├── web/
+│   ├── src/
+│   │   ├── components/
+│   │   │   └── StorageDashboard.tsx
+│   │   └── App.tsx
+│   └── package.json
 ├── scripts/
-│   ├── deploy-to-azure.ps1
-│   ├── initialize-service.ps1
-│   └── setup-entra-app.ps1
-├── Tools/
-│   └── pandoc.exe                  # Markdown conversion tool
-├── setup-user.ps1                  # User registration script
-├── Program.cs                      # App entry point
-├── host.json                       # Function app config
-├── local.settings.json             # Local development settings
-└── eMailToMarkdown.csproj         # .NET project file
+│   ├── deploy-functions.ps1
+│   └── deploy-to-azure.ps1
+├── docs/
+│   ├── AZURE_FUNCTIONS_DEPLOYMENT.md
+│   └── IMPLEMENTATION_STATUS.md
+├── setup-user.ps1
+├── Program.cs
+├── host.json
+└── local.settings.json
 ```
 
 ## 🔑 Key Implementation Details
 
-- **Polling-based**: Timer trigger checks for emails (no webhooks)
-- **Subscriber model**: Only registered users can use the service
-- **Configurable**: Polling interval and delivery method per user
-- **Type-safe**: C# with strong typing and dependency injection
-- **Extensible**: Service-oriented architecture for easy modifications
-- **Production-ready**: Deployed and operational on Azure
+- **Webhook-based**: Immediate processing via SendGrid
+- **Multi-provider**: Saves to all connected providers
+- **OAuth with PKCE**: Secure authorization code flow
+- **Encrypted tokens**: Data Protection API with Azure key storage
+- **Automatic refresh**: Tokens refreshed before expiry
+- **Failure recovery**: Email notification with attachment on errors
 
 ---
 
-**Status**: ✅ Fully implemented, deployed, and operational with SendGrid webhook integration.
+**Status**: ✅ Fully implemented with OneDrive and Google Drive support.
+
+**Last Updated**: January 28, 2026

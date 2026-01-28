@@ -1,14 +1,13 @@
-import { useState, useCallback } from 'react'
-import { useMsal, useIsAuthenticated } from '@azure/msal-react'
+import { useState, useCallback, useEffect } from 'react'
+import { useMsal } from '@azure/msal-react'
 import { InteractionStatus, AuthenticationResult } from '@azure/msal-browser'
 import { loginRequest } from '../auth/msalConfig'
-import { registerUser, RegistrationData } from '../api/authApi'
+import { registerUser, RegistrationData, checkStatus } from '../api/authApi'
 
 type Step = 'signin' | 'folder' | 'complete'
 
 export function RegistrationWizard() {
   const { instance, inProgress, accounts } = useMsal()
-  const isAuthenticated = useIsAuthenticated()
 
   const [currentStep, setCurrentStep] = useState<Step>('signin')
   const [rootFolder, setRootFolder] = useState('/EmailToMarkdown')
@@ -16,23 +15,61 @@ export function RegistrationWizard() {
   const [error, setError] = useState<string | null>(null)
   const [authResult, setAuthResult] = useState<AuthenticationResult | null>(null)
   const [copied, setCopied] = useState(false)
+  const [_isRegistered, setIsRegistered] = useState(false)
+  const [checkingStatus, setCheckingStatus] = useState(false)
 
   const handleSignIn = useCallback(async () => {
     setIsLoading(true)
     setError(null)
 
     try {
-      // Use popup for better UX
+      // First, silently try to get an account if the user is already signed in
+      const currentAccount = instance.getAllAccounts()[0]
+      let shouldRequestConsent = true
+      
+      // If there's an existing account, check registration status first
+      if (currentAccount) {
+        try {
+          const status = await checkStatus(currentAccount.username)
+          if (status.isRegistered && status.rootFolder) {
+            shouldRequestConsent = false
+            setIsRegistered(true)
+            setRootFolder(status.rootFolder)
+          }
+        } catch (err) {
+          console.error('Failed to check status:', err)
+        }
+      }
+
+      // Use popup for better UX - only request consent if not already registered
       const result = await instance.loginPopup({
         ...loginRequest,
-        prompt: 'consent' // Ensure user sees consent screen
+        prompt: shouldRequestConsent ? 'consent' : 'select_account'
       })
 
       setAuthResult(result)
-      setCurrentStep('folder')
-    } catch (err) {
+      
+      // Check if user is already registered (in case we didn't check above)
+      if (result.account && shouldRequestConsent) {
+        setCheckingStatus(true)
+        const status = await checkStatus(result.account.username)
+        if (status.isRegistered && status.rootFolder) {
+          setIsRegistered(true)
+          setRootFolder(status.rootFolder)
+          setCurrentStep('complete')
+        } else {
+          setCurrentStep('folder')
+        }
+        setCheckingStatus(false)
+      } else if (!shouldRequestConsent) {
+        setCurrentStep('complete')
+      } else {
+        setCurrentStep('folder')
+      }
+    } catch (err: any) {
       console.error('Login failed:', err)
-      setError('Sign in failed. Please try again.')
+      const errorMessage = err?.message || err?.errorMessage || 'Sign in failed. Please try again.'
+      setError(errorMessage)
     } finally {
       setIsLoading(false)
     }
@@ -71,9 +108,10 @@ export function RegistrationWizard() {
       } else {
         setError(result.error || 'Registration failed. Please try again.')
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Registration failed:', err)
-      setError('Registration failed. Please try again.')
+      const errorMessage = err?.message || 'Registration failed. Please try again.'
+      setError(errorMessage)
     } finally {
       setIsLoading(false)
     }
@@ -91,6 +129,37 @@ export function RegistrationWizard() {
     setAuthResult(null)
     setRootFolder('/EmailToMarkdown')
   }, [instance])
+
+  // Check registration status on mount if user is already signed in
+  useEffect(() => {
+    const checkExistingRegistration = async () => {
+      console.log('Registration check effect:', { 
+        currentStep, 
+        inProgress, 
+        accountsLength: accounts.length,
+        checkingStatus 
+      })
+      
+      // Only check if we're on the signin step, MSAL is not in progress, and we have an account
+      if (currentStep === 'signin' && inProgress === InteractionStatus.None && accounts.length > 0 && !checkingStatus) {
+        setCheckingStatus(true)
+        try {
+          const status = await checkStatus(accounts[0].username)
+          console.log('Existing registration check:', status)
+          if (status.isRegistered && status.rootFolder) {
+            setIsRegistered(true)
+            setRootFolder(status.rootFolder)
+            setCurrentStep('complete')
+          }
+        } catch (err) {
+          console.error('Failed to check registration status:', err)
+        } finally {
+          setCheckingStatus(false)
+        }
+      }
+    }
+    checkExistingRegistration()
+  }, [accounts, inProgress, currentStep, checkingStatus])
 
   // Determine which step is active/completed
   const getStepState = (step: Step): 'pending' | 'active' | 'completed' => {

@@ -23,7 +23,10 @@ var config = new AppConfiguration
     // but we keep it for backwards compatibility in config
     TenantId = Environment.GetEnvironmentVariable("AZURE_TENANT_ID") ?? Environment.GetEnvironmentVariable("TENANT_ID") ?? string.Empty,
     ClientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID") ?? Environment.GetEnvironmentVariable("CLIENT_ID") ?? string.Empty,
-    ClientSecret = Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET") ?? Environment.GetEnvironmentVariable("CLIENT_SECRET") ?? string.Empty
+    ClientSecret = Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET") ?? Environment.GetEnvironmentVariable("CLIENT_SECRET") ?? string.Empty,
+    // Google OAuth credentials
+    GoogleClientId = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID") ?? string.Empty,
+    GoogleClientSecret = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_SECRET") ?? string.Empty
 };
 
 // Register configuration
@@ -75,7 +78,7 @@ builder.Services.AddSingleton<ConfigurationService>(sp =>
 
 // Register storage providers
 builder.Services.AddSingleton<OneDriveStorageService>();
-// Future: builder.Services.AddSingleton<GoogleDriveStorageService>();
+builder.Services.AddSingleton<GoogleDriveStorageService>();
 builder.Services.AddSingleton<StorageProviderFactory>();
 
 builder.Services

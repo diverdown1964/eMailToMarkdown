@@ -1,60 +1,64 @@
 # Quick Start Guide
 
-## Setup Your Account
+## Setup Your Account (Web UI - Recommended)
 
-1. Run the setup script with your email:
-   ```powershell
-   .\setup-user.ps1 -UserEmail "your-email@example.com"
+1. Visit the registration page:
+   ```
+   https://icy-ocean-04b9b9b0f.4.azurestaticapps.net
    ```
 
-2. The script will:
-   - Register your email in the system
-   - Configure it to save to your OneDrive
-   - Set the default polling interval (60 seconds)
+2. Enter your email address
 
-## Send Your First Email
+3. Connect your storage providers:
+   - Click "Connect OneDrive" and authorize with Microsoft
+   - Click "Connect Google Drive" and authorize with Google
+   - You can connect one or both!
 
-1. From your registered email account, compose a new email
-2. Send it to your configured email address (as set up in SendGrid Inbound Parse)
-3. Email is processed immediately via webhook
-4. Check your OneDrive at `/EmailToMarkdown/YYYY/MM/DD/`
+4. You're ready to go!
 
-## Advanced Configuration
-
-### Save to a Different OneDrive
-
-If you want files saved to a different OneDrive account (e.g., a shared account):
+## Alternative: PowerShell Setup
 
 ```powershell
-.\setup-user.ps1 `
-    -UserEmail "your-email@example.com" `
-    -OneDriveUserEmail "shared-storage@example.com"
+.\setup-user.ps1 -UserEmail "your-email@example.com"
 ```
 
-### Change the Root Folder
+## Forward Your First Email
 
-To organize files in a custom folder:
+1. From your registered email account, forward any email
+2. Send it to your configured SendGrid inbound address
+3. The email is processed immediately via webhook
+4. Check your cloud storage at `/EmailToMarkdown/YYYY/MM/DD/`
 
-```powershell
-.\setup-user.ps1 `
-    -UserEmail "your-email@example.com" `
-    -RootFolder "/MyEmailArchive"
-```
+## Storage Locations
+
+Files are saved to ALL connected providers:
+
+| Provider | Location |
+|----------|----------|
+| OneDrive | `/EmailToMarkdown/2026/01/28/...` |
+| Google Drive | `EmailToMarkdown/2026/01/28/...` |
 
 ## File Naming and Organization
 
 Files are automatically organized by date:
 
 ```
-/EmailToMarkdown/
+EmailToMarkdown/
   2026/
     01/
-      25/
-        2026-01-25-JohnSmith-MeetingNotes.md
-        2026-01-25-JaneDoce-ProjectUpdate.md
+      28/
+        2026-01-28-JohnSmith-MeetingNotes.md
+        2026-01-28-JaneDoe-ProjectUpdate.md
 ```
 
 Filename format: `YYYY-MM-DD-SenderName-Subject.md`
+
+## Forwarded Emails
+
+When you forward an email, the service extracts the original sender's information:
+- Original sender name and email used for filename
+- Original sent date used for organization
+- Forwarding headers are removed from content
 
 ## What Gets Converted
 
@@ -65,61 +69,52 @@ The markdown file includes:
 - Full email body (HTML converted to markdown)
 - Preserves formatting, links, and basic styling
 
+## Multi-Provider Benefits
+
+With both OneDrive and Google Drive connected:
+- Files are saved to BOTH locations simultaneously
+- If one provider fails, the other still works
+- You receive an email notification if any saves fail
+
+## Error Handling
+
+If a storage save fails, you'll receive an email with:
+- The markdown file attached
+- Details about which provider failed
+- The specific error message
+- Instructions to fix (e.g., re-authenticate)
+
 ## Troubleshooting
 
 ### "User not subscribed" error
-Run the setup script to register:
+Register via the web UI or run:
 ```powershell
 .\setup-user.ps1 -UserEmail "your-email@example.com"
 ```
 
-### Files not appearing in OneDrive
-- Wait the full polling interval (default 60 seconds)
-- Check you sent from the registered email address
-- Verify the OneDrive account has proper permissions
+### Files not appearing in storage
+1. Check the web UI - are your providers connected?
+2. Did you receive a failure notification email?
+3. Try disconnecting and reconnecting the provider
+4. Check if storage quota is exceeded
 
-### Processing taking too long
-Emails are processed immediately via webhook. If delays occur:
-- Check SendGrid Inbound Parse configuration
-- Review Azure Function logs
-- Verify webhook endpoint is accessible
-```powershell
-.\setup-user.ps1 -UserEmail "your-email@example.com" -PollingIntervalSeconds 30
-```
+### "Re-authentication required" error
+Your OAuth token has expired. Visit the web UI and reconnect the affected provider.
 
-## Examples
+## Obsidian Integration
 
-### Basic setup for personal use
-```powershell
-.\setup-user.ps1 -UserEmail "john@example.com"
-```
-- Saves to john@example.com's OneDrive
-- Uses default /EmailToMarkdown folder
-- Checks every 60 seconds
+Sync your Obsidian vault to OneDrive and have emails automatically saved to your vault:
 
-### Team setup with shared OneDrive
-```powershell
-.\setup-user.ps1 `
-    -UserEmail "team-member@example.com" `
-    -OneDriveUserEmail "team-archive@example.com" `
-    -RootFolder "/TeamEmailArchive"
-```
-- Team member sends email to storage1@bifocal.show
-- Files save to team-archive@example.com's OneDrive
-- Organized under /TeamEmailArchive
-
-### Fast processing setup
-```powershell
-.\setup-user.ps1 `
-    -UserEmail "urgent@example.com" `
-    -PollingIntervalSeconds 15
-```
-- Checks for new emails every 15 seconds
-- Faster processing, higher costs
+1. Ensure your vault is synced to OneDrive
+2. Register with your vault path:
+   ```powershell
+   .\setup-user.ps1 -UserEmail "user@example.com" -RootFolder "/MyVault/Inbox"
+   ```
 
 ## Next Steps
 
-1. Register your email with the setup script
-2. Send a test email to storage1@bifocal.show
-3. Check your OneDrive after the polling interval
-4. Adjust settings as needed
+1. Register via the web UI
+2. Connect OneDrive and/or Google Drive
+3. Forward a test email
+4. Check your storage locations
+5. Enjoy automated email archiving!

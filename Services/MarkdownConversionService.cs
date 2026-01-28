@@ -901,23 +901,205 @@ public class MarkdownConversionService
     }
 
     public byte[] ConvertToMarkdownBytes(
-        string subject, 
-        string senderName, 
-        string senderEmail, 
-        DateTime receivedDateTime, 
+        string subject,
+        string senderName,
+        string senderEmail,
+        DateTime receivedDateTime,
         string bodyHtml)
     {
         var markdown = $"""
             # {subject}
-            
+
             **From:** {senderName} ({senderEmail})
             **Received:** {receivedDateTime:yyyy-MM-dd HH:mm:ss}
-            
+
             ---
-            
+
             {ConvertHtmlToMarkdown(bodyHtml)}
             """;
 
         return System.Text.Encoding.UTF8.GetBytes(markdown);
     }
+
+    /// <summary>
+    /// Checks if an email subject indicates it's a forwarded message.
+    /// </summary>
+    public static bool IsForwardedEmail(string subject)
+    {
+        if (string.IsNullOrWhiteSpace(subject)) return false;
+        var trimmed = subject.TrimStart();
+        return trimmed.StartsWith("FW:", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("Fwd:", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("FWD:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Strips forwarding prefixes (FW:, Fwd:, RE:, Re:) from the subject line.
+    /// </summary>
+    public static string StripForwardingPrefix(string subject)
+    {
+        if (string.IsNullOrWhiteSpace(subject)) return subject;
+
+        // Pattern to match multiple FW:/Fwd:/RE:/Re: prefixes at the start
+        var pattern = @"^(\s*(FW|Fwd|RE|Re)\s*:\s*)+";
+        return Regex.Replace(subject, pattern, "", RegexOptions.IgnoreCase).Trim();
+    }
+
+    /// <summary>
+    /// Extracts original sender metadata from a forwarded email's HTML body.
+    /// Returns the original sender name, email, and sent date if found.
+    /// </summary>
+    public ForwardedEmailMetadata? ExtractForwardedMetadata(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return null;
+
+        _logger?.LogInformation("Attempting to extract forwarded email metadata");
+
+        var doc = new HtmlDocument();
+        doc.LoadHtml(html);
+
+        // Try DOM-based extraction first
+        var metadata = ExtractMetadataFromDom(doc);
+        if (metadata != null)
+        {
+            _logger?.LogInformation($"Extracted metadata via DOM: From={metadata.SenderName} <{metadata.SenderEmail}>, Date={metadata.SentDate}");
+            return metadata;
+        }
+
+        // Fall back to regex-based extraction on raw HTML
+        metadata = ExtractMetadataFromRegex(html);
+        if (metadata != null)
+        {
+            _logger?.LogInformation($"Extracted metadata via regex: From={metadata.SenderName} <{metadata.SenderEmail}>, Date={metadata.SentDate}");
+        }
+        else
+        {
+            _logger?.LogWarning("Could not extract forwarded email metadata");
+        }
+
+        return metadata;
+    }
+
+    private ForwardedEmailMetadata? ExtractMetadataFromDom(HtmlDocument doc)
+    {
+        // Look for Outlook mobile forwarding header div
+        var outlookHeader = doc.DocumentNode.SelectSingleNode("//div[contains(@class, 'ms-outlook-mobile-reference-message')]");
+        if (outlookHeader != null)
+        {
+            return ExtractMetadataFromHeaderNode(outlookHeader);
+        }
+
+        // Look for nodes containing forwarding header patterns
+        var candidates = doc.DocumentNode.SelectNodes("//*[contains(text(), 'From:') and contains(., 'Sent:') or contains(., 'Date:')]");
+        if (candidates != null)
+        {
+            foreach (var candidate in candidates)
+            {
+                var text = candidate.InnerText ?? "";
+                if (IsForwardingHeaderBlock(text))
+                {
+                    var metadata = ExtractMetadataFromText(text);
+                    if (metadata != null) return metadata;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private ForwardedEmailMetadata? ExtractMetadataFromHeaderNode(HtmlNode node)
+    {
+        var text = node.InnerText ?? "";
+        return ExtractMetadataFromText(text);
+    }
+
+    private ForwardedEmailMetadata? ExtractMetadataFromText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
+        string? senderName = null;
+        string? senderEmail = null;
+        DateTime? sentDate = null;
+
+        // Extract From: field
+        var fromMatch = Regex.Match(text, @"From:\s*([^<\n\r]+?)\s*<([^>]+)>", RegexOptions.IgnoreCase);
+        if (fromMatch.Success)
+        {
+            senderName = fromMatch.Groups[1].Value.Trim();
+            senderEmail = fromMatch.Groups[2].Value.Trim();
+        }
+        else
+        {
+            // Try simpler pattern: From: email@address.com
+            fromMatch = Regex.Match(text, @"From:\s*([\w\.\-]+@[\w\.\-]+\.\w+)", RegexOptions.IgnoreCase);
+            if (fromMatch.Success)
+            {
+                senderEmail = fromMatch.Groups[1].Value.Trim();
+                senderName = senderEmail.Split('@')[0];
+            }
+        }
+
+        // Extract Date/Sent field
+        var dateMatch = Regex.Match(text, @"(?:Date|Sent):\s*([^\n\r]+?)(?=\s*(?:To:|Subject:|$))", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (dateMatch.Success)
+        {
+            var dateStr = dateMatch.Groups[1].Value.Trim();
+            // Try various date formats
+            if (DateTime.TryParse(dateStr, out var parsed))
+            {
+                sentDate = parsed;
+            }
+            else
+            {
+                // Try common email date formats
+                var formats = new[] {
+                    "dddd, MMMM d, yyyy h:mm tt",
+                    "MMMM d, yyyy h:mm tt",
+                    "M/d/yyyy h:mm:ss tt",
+                    "yyyy-MM-dd HH:mm:ss",
+                    "ddd, dd MMM yyyy HH:mm:ss"
+                };
+                foreach (var fmt in formats)
+                {
+                    if (DateTime.TryParseExact(dateStr, fmt, null, System.Globalization.DateTimeStyles.None, out parsed))
+                    {
+                        sentDate = parsed;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (senderEmail != null || sentDate != null)
+        {
+            return new ForwardedEmailMetadata
+            {
+                SenderName = senderName ?? "",
+                SenderEmail = senderEmail ?? "",
+                SentDate = sentDate
+            };
+        }
+
+        return null;
+    }
+
+    private ForwardedEmailMetadata? ExtractMetadataFromRegex(string html)
+    {
+        // Strip HTML tags for easier regex matching
+        var plainText = Regex.Replace(html, "<[^>]+>", " ");
+        plainText = System.Net.WebUtility.HtmlDecode(plainText);
+        plainText = Regex.Replace(plainText, @"\s+", " ");
+
+        return ExtractMetadataFromText(plainText);
+    }
+}
+
+/// <summary>
+/// Holds metadata extracted from a forwarded email's header block.
+/// </summary>
+public class ForwardedEmailMetadata
+{
+    public string SenderName { get; set; } = "";
+    public string SenderEmail { get; set; } = "";
+    public DateTime? SentDate { get; set; }
 }

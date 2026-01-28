@@ -48,28 +48,75 @@ public class AuthFunctions
             if (request == null || string.IsNullOrEmpty(request.Email))
             {
                 var badRequest = req.CreateResponse(HttpStatusCode.BadRequest);
+                AddCorsHeaders(badRequest);
                 await badRequest.WriteAsJsonAsync(new { error = "Invalid request" });
                 return badRequest;
             }
 
-            _logger.LogInformation("Processing registration for {Email}", request.Email);
+            _logger.LogInformation("Processing registration for {Email} with provider {Provider}", request.Email, request.Provider);
 
-            // Store tokens (already obtained by MSAL.js in the SPA)
-            var tokenStored = await _tokenService.StoreTokensDirectlyAsync(
-                request.Provider,
-                request.Email,
-                request.AccessToken,
-                request.RefreshToken,
-                request.ExpiresIn);
+            bool tokensStored = false;
 
-            if (!tokenStored)
+            // Option 1: Authorization code exchange (preferred - gets refresh tokens)
+            if (!string.IsNullOrEmpty(request.Code) && !string.IsNullOrEmpty(request.CodeVerifier))
             {
-                var errorResponse = req.CreateResponse(HttpStatusCode.BadRequest);
-                await errorResponse.WriteAsJsonAsync(new { error = "Failed to store tokens" });
-                return errorResponse;
+                tokensStored = await _tokenService.ExchangeCodeForTokensAsync(
+                    request.Provider,
+                    request.Email,
+                    request.Code,
+                    request.CodeVerifier,
+                    request.RedirectUri ?? "");
+
+                if (!tokensStored)
+                {
+                    _logger.LogWarning("Failed to exchange authorization code for {Email}", request.Email);
+                }
+            }
+            // Option 2: Direct tokens provided (legacy - may not have refresh token)
+            else if (!string.IsNullOrEmpty(request.RefreshToken))
+            {
+                tokensStored = await _tokenService.StoreTokensDirectlyAsync(
+                    request.Provider,
+                    request.Email,
+                    request.AccessToken,
+                    request.RefreshToken,
+                    request.ExpiresIn);
+            }
+            else if (!string.IsNullOrEmpty(request.AccessToken))
+            {
+                // Store access token even without refresh token - useful for immediate validation
+                tokensStored = await _tokenService.StoreTokensDirectlyAsync(
+                    request.Provider,
+                    request.Email,
+                    request.AccessToken,
+                    "", // No refresh token
+                    request.ExpiresIn > 0 ? request.ExpiresIn : 3600);
+            }
+            else
+            {
+                _logger.LogWarning("No authorization code or tokens provided for {Email}", request.Email);
             }
 
-            // Save user preferences
+            // Save storage connection for this provider
+            var storageConnection = new UserStorageConnection
+            {
+                RootFolder = request.RootFolder ?? "/EmailToMarkdown",
+                FolderId = request.FolderId ?? string.Empty,
+                DriveId = request.DriveId ?? string.Empty,
+                ConsentGrantedAt = DateTimeOffset.UtcNow,
+                IsActive = true
+            };
+
+            await _configService.SaveStorageConnectionAsync(request.Email, request.Provider, storageConnection);
+
+            // Link identities if a linked email is provided
+            if (!string.IsNullOrEmpty(request.LinkedEmail) &&
+                !request.LinkedEmail.Equals(request.Email, StringComparison.OrdinalIgnoreCase))
+            {
+                await _configService.LinkIdentitiesAsync(request.LinkedEmail, request.Email, request.Provider);
+            }
+
+            // Also save to legacy UserPreferences for backward compatibility
             var preferences = new UserPreferences
             {
                 PartitionKey = "preferences",
@@ -85,22 +132,29 @@ public class AuthFunctions
 
             await _configService.SaveUserPreferencesAsync(preferences);
 
-            _logger.LogInformation("User registered successfully: {Email}", request.Email);
+            _logger.LogInformation("User registered successfully: {Email} with provider {Provider}", request.Email, request.Provider);
 
             var response = req.CreateResponse(HttpStatusCode.OK);
+            AddCorsHeaders(response);
             await response.WriteAsJsonAsync(new
             {
                 success = true,
                 email = request.Email,
-                rootFolder = preferences.RootFolder
+                rootFolder = preferences.RootFolder,
+                tokensStored = tokensStored,
+                hasRefreshToken = tokensStored && !string.IsNullOrEmpty(request.Code) // Code exchange provides refresh tokens
             });
             return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Registration failed");
+            _logger.LogError(ex, "Registration failed for {Email}", req.Query["email"] ?? "unknown");
             var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
-            await errorResponse.WriteAsJsonAsync(new { error = "Registration failed" });
+            AddCorsHeaders(errorResponse);
+            await errorResponse.WriteAsJsonAsync(new {
+                success = false,
+                error = $"Registration failed: {ex.Message}"
+            });
             return errorResponse;
         }
     }
@@ -110,15 +164,22 @@ public class AuthFunctions
     /// </summary>
     [Function("AuthStatus")]
     public async Task<HttpResponseData> GetStatus(
-        [HttpTrigger(AuthorizationLevel.Function, "get", Route = "auth/status/{email}")]
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "options", Route = "auth/status/{email}")]
         HttpRequestData req,
         string email)
     {
+        // Handle CORS preflight
+        if (req.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateCorsResponse(req);
+        }
+
         try
         {
             var prefs = await _configService.GetUserPreferencesAsync(email);
 
             var response = req.CreateResponse(HttpStatusCode.OK);
+            AddCorsHeaders(response);
             await response.WriteAsJsonAsync(new
             {
                 isRegistered = prefs != null,
@@ -134,7 +195,63 @@ public class AuthFunctions
         {
             _logger.LogError(ex, "Failed to get status for {Email}", email);
             var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+            AddCorsHeaders(errorResponse);
             await errorResponse.WriteAsJsonAsync(new { error = "Failed to get status" });
+            return errorResponse;
+        }
+    }
+
+    /// <summary>
+    /// Get all connected storage providers for a user, including linked identities
+    /// </summary>
+    [Function("AuthProviders")]
+    public async Task<HttpResponseData> GetProviders(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", "options", Route = "auth/providers/{email}")]
+        HttpRequestData req,
+        string email)
+    {
+        // Handle CORS preflight
+        if (req.Method.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateCorsResponse(req);
+        }
+
+        try
+        {
+            _logger.LogInformation("Getting providers for {Email}", email);
+            
+            // Get all storage connections across linked identities
+            var connections = await _configService.GetAllStorageConnectionsForUserAsync(email);
+            
+            _logger.LogInformation("Found {Count} storage connections for {Email}", connections.Count, email);
+            var linkedIdentities = await _configService.GetLinkedIdentitiesAsync(email);
+
+            var providers = connections.Select(kvp => new
+            {
+                provider = kvp.Key,
+                rootFolder = kvp.Value.RootFolder,
+                isActive = kvp.Value.IsActive,
+                consentGrantedAt = kvp.Value.ConsentGrantedAt,
+                lastSuccessfulSync = kvp.Value.LastSuccessfulSync
+            }).ToList();
+
+            var response = req.CreateResponse(HttpStatusCode.OK);
+            AddCorsHeaders(response);
+            await response.WriteAsJsonAsync(new
+            {
+                email = email,
+                providers = providers,
+                linkedIdentities = linkedIdentities.Select(l => new { email = l.RowKey, provider = l.Provider })
+            });
+
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get providers for {Email}", email);
+            var errorResponse = req.CreateResponse(HttpStatusCode.InternalServerError);
+            AddCorsHeaders(errorResponse);
+            await errorResponse.WriteAsJsonAsync(new { error = "Failed to get providers" });
             return errorResponse;
         }
     }
@@ -226,10 +343,15 @@ public class AuthFunctions
     private HttpResponseData CreateCorsResponse(HttpRequestData req)
     {
         var response = req.CreateResponse(HttpStatusCode.OK);
+        AddCorsHeaders(response);
+        return response;
+    }
+
+    private void AddCorsHeaders(HttpResponseData response)
+    {
         response.Headers.Add("Access-Control-Allow-Origin", "*");
         response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         response.Headers.Add("Access-Control-Allow-Headers", "Content-Type, Authorization");
-        return response;
     }
 }
 
@@ -258,6 +380,31 @@ public class RegistrationRequest
 
     [JsonPropertyName("driveId")]
     public string? DriveId { get; set; }
+
+    /// <summary>
+    /// If the user is already logged in with another identity, pass that email here
+    /// to link the identities together.
+    /// </summary>
+    [JsonPropertyName("linkedEmail")]
+    public string? LinkedEmail { get; set; }
+
+    /// <summary>
+    /// Authorization code for server-side token exchange (preferred for getting refresh tokens)
+    /// </summary>
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    /// <summary>
+    /// PKCE code verifier for the authorization code
+    /// </summary>
+    [JsonPropertyName("codeVerifier")]
+    public string? CodeVerifier { get; set; }
+
+    /// <summary>
+    /// Redirect URI used in the authorization request
+    /// </summary>
+    [JsonPropertyName("redirectUri")]
+    public string? RedirectUri { get; set; }
 }
 
 public class RevokeRequest

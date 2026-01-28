@@ -12,6 +12,10 @@ public class AppConfiguration
     public string ClientId { get; set; } = string.Empty;
     public string ClientSecret { get; set; } = string.Empty;
 
+    // Google OAuth credentials for Google Drive
+    public string GoogleClientId { get; set; } = string.Empty;
+    public string GoogleClientSecret { get; set; } = string.Empty;
+
     public string StorageConnectionString =>
         string.IsNullOrEmpty(StorageAccountName) || string.IsNullOrEmpty(StorageAccountKey)
             ? string.Empty

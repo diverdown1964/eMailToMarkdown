@@ -34,8 +34,6 @@ public class TokenService
 
     public async Task<string?> GetValidAccessTokenAsync(string provider, string userEmail)
     {
-        _logger.LogInformation("GetValidAccessTokenAsync called for {Provider}/{User}", provider, userEmail);
-        
         var token = await GetStoredTokenAsync(provider, userEmail);
         if (token == null)
         {
@@ -43,25 +41,19 @@ public class TokenService
             return null;
         }
 
-        _logger.LogInformation("Token found for {Provider}/{User}, IsValid: {IsValid}, Expiry: {Expiry}", 
-            provider, userEmail, token.IsValid, token.AccessTokenExpiry);
-        
         if (!token.IsValid)
         {
-            _logger.LogWarning("Token marked invalid for {Provider}/{User}, RefreshFailureCount: {Count}, LastError: {Error}", 
-                provider, userEmail, token.RefreshFailureCount, token.LastError);
+            _logger.LogWarning("Token marked invalid for {Provider}/{User}", provider, userEmail);
             return null;
         }
 
         // Check if access token is still valid (with 5 minute buffer)
         if (token.AccessTokenExpiry > DateTimeOffset.UtcNow.AddMinutes(5))
         {
-            _logger.LogInformation("Using existing access token for {Provider}/{User}", provider, userEmail);
             return _encryption.Decrypt(token.EncryptedAccessToken);
         }
 
         // Need to refresh
-        _logger.LogInformation("Refreshing token for {Provider}/{User}", provider, userEmail);
         return await RefreshAccessTokenAsync(token);
     }
 
@@ -74,36 +66,53 @@ public class TokenService
     {
         var tokenEndpoint = GetTokenEndpoint(provider);
         var scopes = GetScopes(provider);
+        var (clientId, clientSecret) = GetClientCredentials(provider);
 
         var requestBody = new Dictionary<string, string>
         {
-            ["client_id"] = _config.ClientId,
-            ["scope"] = scopes,
+            ["client_id"] = clientId,
             ["code"] = authorizationCode,
             ["redirect_uri"] = redirectUri,
-            ["grant_type"] = "authorization_code",
-            ["code_verifier"] = codeVerifier
+            ["grant_type"] = "authorization_code"
         };
 
-        // For confidential clients, add client_secret
-        if (!string.IsNullOrEmpty(_config.ClientSecret))
+        // Google doesn't use code_verifier the same way, but we include it for Microsoft
+        if (provider.ToLowerInvariant() == "microsoft")
         {
-            requestBody["client_secret"] = _config.ClientSecret;
+            requestBody["scope"] = scopes;
+            requestBody["code_verifier"] = codeVerifier;
+        }
+        else if (provider.ToLowerInvariant() == "google")
+        {
+            // Google requires code_verifier for PKCE
+            if (!string.IsNullOrEmpty(codeVerifier))
+            {
+                requestBody["code_verifier"] = codeVerifier;
+            }
+        }
+
+        // For confidential clients (Web apps), add client_secret
+        // Both Microsoft (now configured as Web app) and Google require client_secret
+        if (!string.IsNullOrEmpty(clientSecret))
+        {
+            requestBody["client_secret"] = clientSecret;
         }
 
         var httpClient = _httpClientFactory.CreateClient("OAuth");
+
         var response = await httpClient.PostAsync(
             tokenEndpoint,
             new FormUrlEncodedContent(requestBody));
 
         if (!response.IsSuccessStatusCode)
         {
-            var error = await response.Content.ReadAsStringAsync();
-            _logger.LogError("Token exchange failed for {Provider}/{User}: {Error}", provider, userEmail, error);
+            var errorResponse = await response.Content.ReadAsStringAsync();
+            _logger.LogError("Token exchange failed for {Provider}/{User}: {Error}", provider, userEmail, errorResponse);
             return false;
         }
 
-        var tokenResponse = await response.Content.ReadFromJsonAsync<OAuthTokenResponse>();
+        var rawResponse = await response.Content.ReadAsStringAsync();
+        var tokenResponse = System.Text.Json.JsonSerializer.Deserialize<OAuthTokenResponse>(rawResponse);
         if (tokenResponse == null)
         {
             _logger.LogError("Failed to parse token response for {Provider}/{User}", provider, userEmail);
@@ -159,8 +168,6 @@ public class TokenService
         };
 
         await _tokenTable.UpsertEntityAsync(userToken);
-
-        _logger.LogInformation("Tokens stored directly for {Provider}/{User}", provider, userEmail);
         return true;
     }
 
@@ -187,18 +194,24 @@ public class TokenService
         }
 
         var tokenEndpoint = GetTokenEndpoint(token.PartitionKey);
+        var (clientId, clientSecret) = GetClientCredentials(token.PartitionKey);
 
         var requestBody = new Dictionary<string, string>
         {
-            ["client_id"] = _config.ClientId,
-            ["scope"] = token.Scopes,
+            ["client_id"] = clientId,
             ["refresh_token"] = refreshToken,
             ["grant_type"] = "refresh_token"
         };
 
-        if (!string.IsNullOrEmpty(_config.ClientSecret))
+        // Microsoft requires scope, Google doesn't
+        if (token.PartitionKey.ToLowerInvariant() == "microsoft")
         {
-            requestBody["client_secret"] = _config.ClientSecret;
+            requestBody["scope"] = token.Scopes;
+        }
+
+        if (!string.IsNullOrEmpty(clientSecret))
+        {
+            requestBody["client_secret"] = clientSecret;
         }
 
         var httpClient = _httpClientFactory.CreateClient("OAuth");
@@ -242,8 +255,6 @@ public class TokenService
         token.IsValid = true;
 
         await _tokenTable.UpdateEntityAsync(token, token.ETag, TableUpdateMode.Replace);
-
-        _logger.LogInformation("Token refreshed successfully for {RowKey}", token.RowKey);
         return tokenResponse.AccessToken;
     }
 
@@ -278,6 +289,16 @@ public class TokenService
         {
             "microsoft" => "openid profile User.Read Files.ReadWrite offline_access",
             "google" => "openid profile email https://www.googleapis.com/auth/drive.file",
+            _ => throw new ArgumentException($"Unknown provider: {provider}")
+        };
+    }
+
+    private (string clientId, string clientSecret) GetClientCredentials(string provider)
+    {
+        return provider.ToLowerInvariant() switch
+        {
+            "microsoft" => (_config.ClientId, _config.ClientSecret),
+            "google" => (_config.GoogleClientId, _config.GoogleClientSecret),
             _ => throw new ArgumentException($"Unknown provider: {provider}")
         };
     }

@@ -17,7 +17,7 @@ public class StorageProviderFactory
         return providerType switch
         {
             StorageProviderType.OneDrive => _serviceProvider.GetRequiredService<OneDriveStorageService>(),
-            StorageProviderType.GoogleDrive => throw new NotImplementedException("Google Drive support coming soon"),
+            StorageProviderType.GoogleDrive => _serviceProvider.GetRequiredService<GoogleDriveStorageService>(),
             _ => throw new ArgumentException($"Unknown provider type: {providerType}")
         };
     }

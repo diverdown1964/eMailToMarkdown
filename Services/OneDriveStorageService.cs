@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using EmailToMarkdown.Models;
 using Microsoft.Extensions.Logging;
@@ -75,18 +76,20 @@ public class OneDriveStorageService : IStorageProvider
             
             if (!response.IsSuccessStatusCode)
             {
-                var error = await response.Content.ReadAsStringAsync(cancellationToken);
+                var errorJson = await response.Content.ReadAsStringAsync(cancellationToken);
                 _logger.LogError("Failed to upload to OneDrive for {User}: {Status} {Error}",
-                    userEmail, response.StatusCode, error);
+                    userEmail, response.StatusCode, errorJson);
 
                 // Check if it's an auth error
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
                     response.StatusCode == System.Net.HttpStatusCode.Forbidden)
                 {
-                    return StorageResult.Failed("Authentication failed", requiresReauth: true);
+                    return StorageResult.Failed("Authentication failed - please re-authenticate", requiresReauth: true);
                 }
 
-                return StorageResult.Failed($"Upload failed: {response.StatusCode}");
+                // Try to extract error message from JSON
+                var errorMessage = ExtractErrorMessage(errorJson) ?? $"Upload failed: {response.StatusCode}";
+                return StorageResult.Failed(errorMessage);
             }
 
             var driveItem = await response.Content.ReadFromJsonAsync<DriveItemResponse>(
@@ -164,6 +167,26 @@ public class OneDriveStorageService : IStorageProvider
             _logger.LogError(ex, "Failed to list folders for {User}", userEmail);
             return Enumerable.Empty<FolderInfo>();
         }
+    }
+
+    private string? ExtractErrorMessage(string errorJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(errorJson);
+            if (doc.RootElement.TryGetProperty("error", out var errorElement))
+            {
+                if (errorElement.TryGetProperty("message", out var messageElement))
+                {
+                    return messageElement.GetString();
+                }
+            }
+        }
+        catch
+        {
+            // If parsing fails, return null
+        }
+        return null;
     }
 }
 

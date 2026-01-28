@@ -2,8 +2,9 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Azure.Identity;
-using Microsoft.Graph;
+using Microsoft.AspNetCore.DataProtection;
+using Azure.Data.Tables;
+using Azure.Storage.Blobs;
 using EmailToMarkdown.Models;
 using EmailToMarkdown.Services;
 
@@ -18,24 +19,64 @@ var config = new AppConfiguration
     AcsConnectionString = Environment.GetEnvironmentVariable("ACS_CONNECTION_STRING") ?? string.Empty,
     StorageAccountName = Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME") ?? string.Empty,
     StorageAccountKey = Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_KEY") ?? string.Empty,
+    // Multi-tenant app uses /common endpoint, so TenantId is no longer needed for auth
+    // but we keep it for backwards compatibility in config
     TenantId = Environment.GetEnvironmentVariable("AZURE_TENANT_ID") ?? Environment.GetEnvironmentVariable("TENANT_ID") ?? string.Empty,
     ClientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID") ?? Environment.GetEnvironmentVariable("CLIENT_ID") ?? string.Empty,
     ClientSecret = Environment.GetEnvironmentVariable("AZURE_CLIENT_SECRET") ?? Environment.GetEnvironmentVariable("CLIENT_SECRET") ?? string.Empty
 };
 
-// Register services
+// Register configuration
 builder.Services.AddSingleton(config);
 
-// Register Microsoft Graph client for OneDrive access
-if (!string.IsNullOrEmpty(config.TenantId) && !string.IsNullOrEmpty(config.ClientId) && !string.IsNullOrEmpty(config.ClientSecret))
+// Configure Data Protection for token encryption
+// Keys are persisted to Azure Blob Storage for consistency across function instances
+if (!string.IsNullOrEmpty(config.StorageConnectionString))
 {
-    var credential = new ClientSecretCredential(config.TenantId, config.ClientId, config.ClientSecret);
-    var graphClient = new GraphServiceClient(credential);
-    builder.Services.AddSingleton(graphClient);
+    var blobServiceClient = new BlobServiceClient(config.StorageConnectionString);
+    var containerClient = blobServiceClient.GetBlobContainerClient("dataprotection");
+    containerClient.CreateIfNotExists();
+
+    builder.Services.AddDataProtection()
+        .SetApplicationName("EmailToMarkdown")
+        .PersistKeysToAzureBlobStorage(containerClient.GetBlobClient("keys.xml"));
+}
+else
+{
+    // Fallback for local development without Azure Storage
+    builder.Services.AddDataProtection()
+        .SetApplicationName("EmailToMarkdown");
 }
 
-// Register ConfigurationService for user preferences
-builder.Services.AddSingleton(sp => new ConfigurationService(config.StorageConnectionString));
+// Configure HTTP clients for OAuth and Graph API
+builder.Services.AddHttpClient("Graph", client =>
+{
+    client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/");
+    client.DefaultRequestHeaders.Add("Accept", "application/json");
+});
+
+builder.Services.AddHttpClient("OAuth");
+
+// Register Table Service Client
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<AppConfiguration>();
+    return new TableServiceClient(cfg.StorageConnectionString);
+});
+
+// Register services
+builder.Services.AddSingleton<TokenEncryptionService>();
+builder.Services.AddSingleton<TokenService>();
+builder.Services.AddSingleton<ConfigurationService>(sp =>
+{
+    var cfg = sp.GetRequiredService<AppConfiguration>();
+    return new ConfigurationService(cfg.StorageConnectionString);
+});
+
+// Register storage providers
+builder.Services.AddSingleton<OneDriveStorageService>();
+// Future: builder.Services.AddSingleton<GoogleDriveStorageService>();
+builder.Services.AddSingleton<StorageProviderFactory>();
 
 builder.Services
     .AddApplicationInsightsTelemetryWorkerService()

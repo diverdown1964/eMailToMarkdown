@@ -38,4 +38,17 @@ public class ConfigurationService
         await tableClient.CreateIfNotExistsAsync();
         await tableClient.UpsertEntityAsync(preferences);
     }
+
+    public async Task DeleteUserPreferencesAsync(string emailAddress)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(_tableName);
+        try
+        {
+            await tableClient.DeleteEntityAsync("preferences", emailAddress.ToLowerInvariant());
+        }
+        catch (Azure.RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Already deleted, that's fine
+        }
+    }
 }

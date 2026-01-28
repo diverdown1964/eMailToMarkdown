@@ -11,8 +11,15 @@ public class UserPreferences : ITableEntity
     public ETag ETag { get; set; }
     
     public string RootFolder { get; set; } = "/EmailToMarkdown";
-    public string StorageProvider { get; set; } = "onedrive";
+    public string StorageProvider { get; set; } = "onedrive";  // "onedrive" or "googledrive"
     public string EmailAddress { get; set; } = string.Empty;
-    public string OneDriveUserEmail { get; set; } = string.Empty;
-    public string DeliveryMethod { get; set; } = "email"; // "email", "onedrive", or "both"
+    public string DeliveryMethod { get; set; } = "onedrive";   // "email", "onedrive", or "both"
+
+    // Delegated auth fields
+    public string ProviderUserId { get; set; } = string.Empty;   // Microsoft OID or Google sub
+    public string ProviderTenantId { get; set; } = string.Empty; // User's home tenant
+    public string DriveId { get; set; } = string.Empty;          // Specific drive ID
+    public string FolderId { get; set; } = string.Empty;         // Selected folder ID
+    public DateTimeOffset? ConsentGrantedAt { get; set; }
+    public DateTimeOffset? LastSuccessfulSync { get; set; }
 }

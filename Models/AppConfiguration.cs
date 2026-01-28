@@ -13,5 +13,7 @@ public class AppConfiguration
     public string ClientSecret { get; set; } = string.Empty;
 
     public string StorageConnectionString =>
-        $"DefaultEndpointsProtocol=https;AccountName={StorageAccountName};AccountKey={StorageAccountKey};EndpointSuffix=core.windows.net";
+        string.IsNullOrEmpty(StorageAccountName) || string.IsNullOrEmpty(StorageAccountKey)
+            ? string.Empty
+            : $"DefaultEndpointsProtocol=https;AccountName={StorageAccountName};AccountKey={StorageAccountKey};EndpointSuffix=core.windows.net";
 }

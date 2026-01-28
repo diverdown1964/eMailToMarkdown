@@ -9,6 +9,12 @@ local.settings.json
 .env.new
 .env.local
 
+# Claude/AI assistant local settings
+.claude/
+
+# Invalid/temporary files
+nul
+
 # Logs and deployment artifacts
 logs/
 logs*/
